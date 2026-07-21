@@ -146,6 +146,24 @@ async function createWindow(): Promise<void> {
   console.log("[main] loading URL:", url);
   mainWindow.webContents.on("did-finish-load", () => console.log("[main] page loaded OK"));
   mainWindow.webContents.on("did-fail-load", (_e, code, desc) => console.error("[main] page FAILED:", code, desc));
+
+  // Right-click context menu for editable fields (textarea/input)
+  mainWindow.webContents.on("context-menu", (event, params) => {
+    if (params.isEditable) {
+      event.preventDefault();
+      const menu = Menu.buildFromTemplate([
+        { role: "undo", label: "撤销" },
+        { role: "redo", label: "重做" },
+        { type: "separator" },
+        { role: "cut", label: "剪切" },
+        { role: "copy", label: "复制" },
+        { role: "paste", label: "粘贴" },
+        { role: "selectAll", label: "全选" },
+      ]);
+      menu.popup({ window: mainWindow! });
+    }
+  });
+
   await mainWindow.loadURL(url);
   console.log("[main] loadURL resolved");
 }
