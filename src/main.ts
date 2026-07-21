@@ -16,14 +16,25 @@ let projectDir: string | undefined;
 
 // Parse --project <path> from command line
 function parseProjectDir(argv: string[]): string | undefined {
+  const logLine = `[${new Date().toISOString()}] argv: ${JSON.stringify(argv)}\n`;
+  try { fs.appendFileSync(path.join(app.getPath("userData"), "argv-debug.log"), logLine); } catch {}
   const idx = argv.indexOf("--project");
   if (idx !== -1 && argv[idx + 1]) {
     const p = argv[idx + 1];
+    try { fs.appendFileSync(path.join(app.getPath("userData"), "argv-debug.log"), `  --project=${p} exists=${fs.existsSync(p)}\n`); } catch {}
     if (fs.existsSync(p)) return p;
   }
   return undefined;
 }
 projectDir = parseProjectDir(process.argv);
+console.log("[main] initial projectDir:", projectDir);
+
+// ─── Shared App Icon ─────────────────────────────────────────────────
+
+const ICON_PATH = path.join(__dirname, "..", "resources", "icon.png");
+const APP_ICON = fs.existsSync(ICON_PATH)
+  ? nativeImage.createFromPath(ICON_PATH)
+  : nativeImage.createEmpty();
 
 // ─── Window State Persistence ────────────────────────────────────────
 
@@ -101,6 +112,7 @@ async function createWindow(): Promise<void> {
     minWidth: 800,
     minHeight: 600,
     title: "Pi Web Desktop",
+    icon: APP_ICON,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -171,17 +183,7 @@ async function createWindow(): Promise<void> {
 // ─── Tray ────────────────────────────────────────────────────────────
 
 function createTray(): void {
-  // 16x16 simple icon (blue circle) generated at runtime
-  const icon = nativeImage.createFromBuffer(
-    Buffer.from(
-      "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAA" +
-      "OklEQVQ4y2NgGAWjYBSMglEwCkbBKBgFo2AUjIJRMApGwSgY" +
-      "BaNgFIyCUTAKRsEoGAWjYBSMglEwCkbBKBgFAAqEAAGeMKHpAAAAAElFTkSuQmCC",
-      "base64"
-    )
-  );
-
-  tray = new Tray(icon);
+  tray = new Tray(APP_ICON);
   tray.setToolTip("Pi Web Desktop");
 
   const contextMenu = Menu.buildFromTemplate([
@@ -440,6 +442,7 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on("second-instance", (_event, commandLine) => {
+    console.log("[main] second-instance commandLine:", JSON.stringify(commandLine));
     // Parse --project from the second instance's command line
     const newDir = parseProjectDir(commandLine);
     if (newDir && newDir !== projectDir) {

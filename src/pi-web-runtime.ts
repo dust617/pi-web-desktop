@@ -115,7 +115,7 @@ export class PiWebRuntime {
       {
         cwd: cwd || undefined,
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, PI_WEB_NO_OPEN: "1", PORT: String(port), HOSTNAME: hostname },
+        env: { ...process.env, PI_WEB_NO_OPEN: "1", PORT: String(port), HOSTNAME: hostname, ...(cwd ? { PI_CWD: cwd } : {}) },
         windowsHide: true,
       }
     );
