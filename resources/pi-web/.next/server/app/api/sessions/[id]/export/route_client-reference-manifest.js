@@ -1,0 +1,1 @@
+globalThis.__RSC_MANIFEST=(globalThis.__RSC_MANIFEST||{});globalThis.__RSC_MANIFEST["/api/sessions/[id]/export/route"]={"moduleLoading":{"prefix":"/_next/"},"ssrModuleMapping":{},"edgeSSRModuleMapping":{},"clientModules":{},"entryCSSFiles":{"/Users/alex/Documents/Workspace/pi-web/app/api/sessions/[id]/export/route":[]},"rscModuleMapping":{},"edgeRscModuleMapping":{}};

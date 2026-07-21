@@ -8,39 +8,88 @@ import * as path from "path";
 import * as fs from "fs";
 import { PiWebRuntime } from "./pi-web-runtime";
 
+interface ProjectOpenRequest {
+  requestId: string;
+  projectDir: string;
+}
+
 const runtime = new PiWebRuntime();
 let mainWindow: BrowserWindow | null = null;
+let windowReadyPromise: Promise<void> | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
 let projectDir: string | undefined;
+let projectSwitchQueue: Promise<void> = Promise.resolve();
+let pendingProjectTimer: NodeJS.Timeout | null = null;
+const processedProjectRequests = new Set<string>();
+const PENDING_DIR = path.join(app.getPath("userData"), "pending-projects");
+const DEBUG_LOG = path.join(app.getPath("userData"), "argv-debug.log");
 
-// Parse --project <path> from command line
-function parseProjectDir(argv: string[]): string | undefined {
-  const logLine = `[${new Date().toISOString()}] argv: ${JSON.stringify(argv)}\n`;
-  try { fs.appendFileSync(path.join(app.getPath("userData"), "argv-debug.log"), logLine); } catch {}
-  const idx = argv.indexOf("--project");
-  if (idx !== -1 && argv[idx + 1]) {
-    const p = argv[idx + 1];
-    try { fs.appendFileSync(path.join(app.getPath("userData"), "argv-debug.log"), `  --project=${p} exists=${fs.existsSync(p)}\n`); } catch {}
-    if (fs.existsSync(p)) return p;
-  }
-  return undefined;
+function debugLog(message: string): void {
+  try { fs.appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] ${message}\n`); } catch {}
 }
+
+function normalizeProjectDir(candidate: string): string | undefined {
+  try {
+    const resolved = path.resolve(candidate);
+    if (!fs.statSync(resolved).isDirectory()) return undefined;
+    return fs.realpathSync.native(resolved);
+  } catch {
+    return undefined;
+  }
+}
+
+// Parse --project <path> or --project=<path> from this process's original argv.
+function parseProjectDir(argv: string[]): string | undefined {
+  debugLog(`argv: ${JSON.stringify(argv)}`);
+  let candidate: string | undefined;
+  for (let i = 0; i < argv.length; i += 1) {
+    if (argv[i] === "--project" && argv[i + 1] && !argv[i + 1].startsWith("--")) {
+      candidate = argv[i + 1];
+      break;
+    }
+    if (argv[i].startsWith("--project=")) {
+      candidate = argv[i].slice("--project=".length);
+      break;
+    }
+  }
+  const normalized = candidate ? normalizeProjectDir(candidate) : undefined;
+  debugLog(`parsed project=${candidate ?? "(none)"} normalized=${normalized ?? "(invalid/none)"}`);
+  return normalized;
+}
+
 projectDir = parseProjectDir(process.argv);
+const launchProjectRequest: ProjectOpenRequest | undefined = projectDir
+  ? { requestId: `${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2)}`, projectDir }
+  : undefined;
 console.log("[main] initial projectDir:", projectDir);
 
-// File-based signal: write project dir so the running instance can pick it up
-const PENDING_FILE = path.join(app.getPath("userData"), "pending-project.txt");
-if (projectDir) {
-  try { fs.writeFileSync(PENDING_FILE, projectDir, "utf8"); } catch {}
+function writePendingProjectRequest(request: ProjectOpenRequest): void {
+  const safeId = request.requestId.replace(/[^A-Za-z0-9._-]/g, "_");
+  const finalFile = path.join(PENDING_DIR, `${safeId}.json`);
+  const tempFile = path.join(PENDING_DIR, `${safeId}.${process.pid}.tmp`);
+  try {
+    fs.mkdirSync(PENDING_DIR, { recursive: true });
+    fs.writeFileSync(tempFile, JSON.stringify(request), "utf8");
+    fs.renameSync(tempFile, finalFile);
+    debugLog(`pending request written: ${JSON.stringify(request)}`);
+  } catch (err) {
+    try { fs.unlinkSync(tempFile); } catch {}
+    debugLog(`pending request write failed: ${String(err)}`);
+  }
 }
 
 // ─── Shared App Icon ─────────────────────────────────────────────────
 
 const ICON_PATH = path.join(__dirname, "..", "resources", "icon.png");
+const TRAY_ICON_PATH = path.join(__dirname, "..", "resources", "icon-32.png");
 const APP_ICON = fs.existsSync(ICON_PATH)
   ? nativeImage.createFromPath(ICON_PATH)
   : nativeImage.createEmpty();
+// Windows taskbar tray needs a small icon (16–32 px); use pre-sized PNG for crispness.
+const TRAY_ICON = fs.existsSync(TRAY_ICON_PATH)
+  ? nativeImage.createFromPath(TRAY_ICON_PATH)
+  : APP_ICON.resize({ width: 32, height: 32 });
 
 // ─── Window State Persistence ────────────────────────────────────────
 
@@ -90,8 +139,9 @@ async function createWindow(): Promise<void> {
   let url: string;
 
   try {
-    const info = await runtime.start(projectDir);
-    url = info.url;
+    const initialProjectDir = projectDir;
+    const info = await runtime.start(initialProjectDir);
+    url = await getProjectUrl(info.url, initialProjectDir);
   } catch (err: any) {
     const detail = [
       `错误信息：${err.message}`,
@@ -142,38 +192,20 @@ async function createWindow(): Promise<void> {
 
   mainWindow.on("closed", () => {
     mainWindow = null;
+    windowReadyPromise = null;
   });
 
-  // Check pending-project.txt on focus: switch project if a new one was requested
-  mainWindow.on("focus", () => {
-    try {
-      if (!fs.existsSync(PENDING_FILE)) return;
-      const newDir = fs.readFileSync(PENDING_FILE, "utf8").trim();
-      fs.unlinkSync(PENDING_FILE);
-      if (newDir && newDir !== projectDir && fs.existsSync(newDir)) {
-        projectDir = newDir;
-        runtime.stop();
-        runtime
-          .start(projectDir)
-          .then((info) => mainWindow?.loadURL(info.url))
-          .catch((err) => dialog.showErrorBox("切换项目失败", err.message));
-      }
-    } catch {}
-  });
-
-  // Only allow navigation to our local Pi Web instance
+  // Only allow navigation to our current local Pi Web instance
   mainWindow.webContents.on("will-navigate", (event, navUrl) => {
-    if (!navUrl.startsWith(url)) {
+    if (!isRuntimeUrl(navUrl)) {
       event.preventDefault();
       if (navUrl.startsWith("https:")) shell.openExternal(navUrl);
     }
   });
 
-  // External links: https only
+  // External links: current runtime origin or external HTTPS only.
   mainWindow.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
-    if (targetUrl.startsWith("http://127.0.0.1") || targetUrl.startsWith("http://localhost")) {
-      return { action: "allow" };
-    }
+    if (isRuntimeUrl(targetUrl)) return { action: "allow" };
     if (targetUrl.startsWith("https:")) shell.openExternal(targetUrl);
     return { action: "deny" };
   });
@@ -206,7 +238,7 @@ async function createWindow(): Promise<void> {
 // ─── Tray ────────────────────────────────────────────────────────────
 
 function createTray(): void {
-  tray = new Tray(APP_ICON);
+  tray = new Tray(TRAY_ICON);
   tray.setToolTip("Pi Web Desktop");
 
   const contextMenu = Menu.buildFromTemplate([
@@ -227,9 +259,10 @@ function createTray(): void {
       click: async () => {
         runtime.stop();
         try {
-          const info = await runtime.start();
-          await mainWindow?.loadURL(info.url);
-          mainWindow?.show();
+          const info = await runtime.start(projectDir);
+          const targetUrl = await getProjectUrl(info.url, projectDir);
+          await mainWindow?.loadURL(targetUrl);
+          showMainWindow();
         } catch (err: any) {
           dialog.showErrorBox("重启失败", err.message);
         }
@@ -257,9 +290,7 @@ function createTray(): void {
 
 function assertLocalSender(event: Electron.IpcMainInvokeEvent): void {
   const senderUrl = event.senderFrame?.url ?? "";
-  if (!senderUrl.startsWith("http://127.0.0.1") && !senderUrl.startsWith("http://localhost")) {
-    throw new Error(`IPC rejected: untrusted sender frame ${senderUrl}`);
-  }
+  if (!isRuntimeUrl(senderUrl)) throw new Error(`IPC rejected: untrusted sender frame ${senderUrl}`);
 }
 
 ipcMain.handle("get-runtime-info", (event) => {
@@ -308,36 +339,43 @@ ipcMain.handle("check-file-exists", (event, filePath: string): boolean => {
 
 // ─── Context Menu Registration ──────────────────────────────────────
 
-function getContextMenuCommand(): string {
+function getContextMenuCommand(targetToken: "%1" | "%V"): string {
   if (app.isPackaged) {
     // Packaged: exe is process.execPath
-    return `"${process.execPath}" --project "%V"`;
+    return `"${process.execPath}" --project "${targetToken}"`;
   }
-  // Development: electron.exe + app dir
+  // Development: electron.exe + an absolute app directory keeps app identity stable.
   const electronExe = process.execPath;
-  const appDir = path.join(__dirname, "..");
-  return `"${electronExe}" "${appDir}" --project "%V"`;
+  const appDir = path.resolve(__dirname, "..");
+  return `"${electronExe}" "${appDir}" --project "${targetToken}"`;
+}
+
+function escapeRegistryString(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
 function registerContextMenu(): void {
-  const cmd = getContextMenuCommand();
-  const icon = app.isPackaged ? process.execPath : path.join(__dirname, "..", "resources", "pi-web", "favicon.ico");
+  const selectedDirectoryCmd = getContextMenuCommand("%1");
+  const directoryBackgroundCmd = getContextMenuCommand("%V");
+  const icon = app.isPackaged ? process.execPath : path.join(__dirname, "..", "resources", "icon.ico");
+  // .exe/.dll need ",0" to extract the first icon resource; standalone .ico does not.
+  const iconReg = app.isPackaged ? `${icon.replace(/\\/g, "\\\\")},0` : icon.replace(/\\/g, "\\\\");
   const regScript = [
     `Windows Registry Editor Version 5.00`,
     ``,
     `[HKEY_CLASSES_ROOT\\Directory\\shell\\PiWebDesktop]`,
     `@="在此打开 Pi Web"`,
-    `"Icon"="${icon.replace(/\\/g, "\\\\")},0"`,
+    `"Icon"="${iconReg}"`,
     ``,
     `[HKEY_CLASSES_ROOT\\Directory\\shell\\PiWebDesktop\\command]`,
-    `@="${cmd.replace(/\\/g, "\\\\")}"`,
+    `@="${escapeRegistryString(selectedDirectoryCmd)}"`,
     ``,
     `[HKEY_CLASSES_ROOT\\Directory\\Background\\shell\\PiWebDesktop]`,
     `@="在此打开 Pi Web"`,
-    `"Icon"="${icon.replace(/\\/g, "\\\\")},0"`,
+    `"Icon"="${iconReg}"`,
     ``,
     `[HKEY_CLASSES_ROOT\\Directory\\Background\\shell\\PiWebDesktop\\command]`,
-    `@="${cmd.replace(/\\/g, "\\\\")}"`,
+    `@="${escapeRegistryString(directoryBackgroundCmd)}"`,
   ].join("\r\n");
 
   const tmpReg = path.join(app.getPath("temp"), "pi-web-context-menu.reg");
@@ -389,12 +427,12 @@ function buildMenu(): void {
         { type: "separator" },
         {
           label: "打开项目目录",
-          click: () => shell.openPath(app.getPath("userData")),
+          click: () => shell.openPath(projectDir ?? process.cwd()),
         },
         {
           label: "在资源管理器中显示",
           click: () => {
-            const cwd = process.cwd();
+            const cwd = projectDir ?? process.cwd();
             if (fs.existsSync(cwd)) shell.showItemInFolder(cwd);
           },
         },
@@ -458,100 +496,182 @@ function buildMenu(): void {
   Menu.setApplicationMenu(menu);
 }
 
+// ─── Project Switching ──────────────────────────────────────────────
+
+function isRuntimeUrl(targetUrl: string): boolean {
+  const baseUrl = runtime.info?.url;
+  if (!baseUrl) return false;
+  try {
+    return new URL(targetUrl).origin === new URL(baseUrl).origin;
+  } catch {
+    return false;
+  }
+}
+
+async function getProjectUrl(baseUrl: string, cwd?: string): Promise<string> {
+  if (!cwd) return baseUrl;
+  // The locked pi-web client recognizes cwd and enters its native unsaved-new-session state.
+  // This keeps the visible project and the agent/tool cwd identical without creating a fake empty session.
+  return `${baseUrl}/?cwd=${encodeURIComponent(cwd)}`;
+}
+
+function showMainWindow(): void {
+  if (!mainWindow) return;
+  mainWindow.show();
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.focus();
+}
+
+function ensureWindow(): Promise<void> {
+  if (mainWindow) return Promise.resolve();
+  if (!windowReadyPromise) {
+    windowReadyPromise = createWindow().finally(() => {
+      if (!mainWindow) windowReadyPromise = null;
+    });
+  }
+  return windowReadyPromise;
+}
+
+async function openProjectDirectory(rawDir: string): Promise<void> {
+  const normalized = normalizeProjectDir(rawDir);
+  if (!normalized) throw new Error(`项目目录不存在或不是文件夹：${rawDir}`);
+
+  await app.whenReady();
+  await ensureWindow();
+  const info = runtime.info ?? await runtime.start(normalized);
+  const targetUrl = await getProjectUrl(info.url, normalized);
+  if (!mainWindow) throw new Error("主窗口尚未创建");
+
+  await mainWindow.loadURL(targetUrl);
+  projectDir = normalized;
+  showMainWindow();
+  debugLog(`project opened cwd=${normalized} url=${targetUrl}`);
+}
+
+function rememberProjectRequest(requestId: string): boolean {
+  if (processedProjectRequests.has(requestId)) return false;
+  processedProjectRequests.add(requestId);
+  if (processedProjectRequests.size > 200) {
+    const oldest = processedProjectRequests.values().next().value as string | undefined;
+    if (oldest) processedProjectRequests.delete(oldest);
+  }
+  return true;
+}
+
+function queueProjectOpen(request: ProjectOpenRequest, source: string): void {
+  if (!rememberProjectRequest(request.requestId)) {
+    debugLog(`duplicate project request ignored source=${source} id=${request.requestId}`);
+    return;
+  }
+  debugLog(`project request queued source=${source} ${JSON.stringify(request)}`);
+  projectSwitchQueue = projectSwitchQueue
+    .then(() => openProjectDirectory(request.projectDir))
+    .catch((err) => {
+      debugLog(`project request failed source=${source}: ${String(err)}`);
+      dialog.showErrorBox("切换项目失败", err instanceof Error ? err.message : String(err));
+    });
+}
+
+function parseAdditionalProjectRequest(data: unknown): ProjectOpenRequest | undefined {
+  if (!data || typeof data !== "object") return undefined;
+  const record = data as Record<string, unknown>;
+  if (typeof record.requestId !== "string" || typeof record.projectDir !== "string") return undefined;
+  return { requestId: record.requestId, projectDir: record.projectDir };
+}
+
+function consumePendingProjectRequest(): void {
+  if (!fs.existsSync(PENDING_DIR)) return;
+  let files: string[];
+  try {
+    files = fs.readdirSync(PENDING_DIR).filter((name) => name.endsWith(".json")).sort();
+  } catch (err) {
+    debugLog(`pending request directory read failed: ${String(err)}`);
+    return;
+  }
+
+  for (const name of files) {
+    const requestFile = path.join(PENDING_DIR, name);
+    try {
+      const raw = fs.readFileSync(requestFile, "utf8").trim();
+      fs.unlinkSync(requestFile);
+      const parsed = JSON.parse(raw) as Partial<ProjectOpenRequest>;
+      if (typeof parsed.requestId === "string" && typeof parsed.projectDir === "string") {
+        queueProjectOpen({ requestId: parsed.requestId, projectDir: parsed.projectDir }, "pending-file");
+      } else {
+        debugLog(`invalid pending request ${name}: ${raw}`);
+      }
+    } catch (err) {
+      try { fs.unlinkSync(requestFile); } catch {}
+      debugLog(`pending request read failed ${name}: ${String(err)}`);
+    }
+  }
+}
+
 // ─── App Lifecycle ───────────────────────────────────────────────────
 
-const gotLock = app.requestSingleInstanceLock();
+const gotLock = app.requestSingleInstanceLock(launchProjectRequest ?? {});
 if (!gotLock) {
+  // additionalData is primary; this atomic file is a fallback for development launches
+  // where Electron occasionally fails to deliver second-instance.
+  if (launchProjectRequest) writePendingProjectRequest(launchProjectRequest);
   app.quit();
 } else {
-  app.on("second-instance", (_event, commandLine) => {
-    try { fs.appendFileSync(path.join(app.getPath("userData"), "argv-debug.log"), `[${new Date().toISOString()}] second-instance commandLine: ${JSON.stringify(commandLine)}\n`); } catch {}
-    // Parse --project from the second instance's command line
-    const newDir = parseProjectDir(commandLine);
-    if (newDir && newDir !== projectDir) {
-      // Switch project: restart pi-web with new cwd
-      projectDir = newDir;
-      runtime.stop();
-      runtime
-        .start(projectDir)
-        .then((info) => {
-          if (mainWindow) {
-            mainWindow.loadURL(info.url);
-            mainWindow.show();
-            if (mainWindow.isMinimized()) mainWindow.restore();
-            mainWindow.focus();
-          }
-        })
-        .catch((err) => dialog.showErrorBox("切换项目失败", err.message));
-    } else if (mainWindow) {
-      mainWindow.show();
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
-    } else {
-      createWindow();
-    }
+  app.on("second-instance", (_event, commandLine, workingDirectory, additionalData) => {
+    debugLog(`second-instance argv=${JSON.stringify(commandLine)} cwd=${workingDirectory} data=${JSON.stringify(additionalData)}`);
+    const request = parseAdditionalProjectRequest(additionalData);
+    if (request) queueProjectOpen(request, "second-instance");
+    else showMainWindow();
   });
 
   app.whenReady().then(() => {
     buildMenu();
     createTray();
 
-    // Crash recovery: if pi-web exits unexpectedly, offer to restart
+    // Crash recovery: restart on a new port, then explicitly restore the project session.
     runtime.onCrash = (code, signal) => {
       dialog
         .showMessageBox({
           type: "warning",
           title: "Pi Web 意外退出",
-          message: `Pi Web 服务意外退出（退出码：${code ?? signal}）`,
+          message: `Pi Web 服务意外退出（退出码：${code ?? signal ?? "unknown"}）`,
           buttons: ["重启服务", "忽略"],
           defaultId: 0,
         })
-        .then(({ response }) => {
-          if (response === 0) {
-            runtime
-              .start()
-              .then((info) => mainWindow?.loadURL(info.url))
-              .catch((err) => dialog.showErrorBox("重启失败", err.message));
+        .then(async ({ response }) => {
+          if (response !== 0) return;
+          try {
+            const info = await runtime.start(projectDir);
+            const targetUrl = await getProjectUrl(info.url, projectDir);
+            await mainWindow?.loadURL(targetUrl);
+            showMainWindow();
+          } catch (err: any) {
+            dialog.showErrorBox("重启失败", err.message);
           }
         });
     };
 
-    createWindow();
+    void ensureWindow().catch((err) => debugLog(`initial window failed: ${String(err)}`));
 
-    // Watch pending-project.txt: when a second instance writes it, switch project
-    fs.watchFile(PENDING_FILE, { interval: 400 }, () => {
-      try {
-        if (!fs.existsSync(PENDING_FILE)) return;
-        const newDir = fs.readFileSync(PENDING_FILE, "utf8").trim();
-        fs.unlinkSync(PENDING_FILE);
-        if (newDir && newDir !== projectDir && fs.existsSync(newDir)) {
-          projectDir = newDir;
-          runtime.stop();
-          runtime
-            .start(projectDir)
-            .then((info) => {
-              mainWindow?.loadURL(info.url);
-              mainWindow?.show();
-              mainWindow?.focus();
-            })
-            .catch((err) => dialog.showErrorBox("切换项目失败", err.message));
-        }
-      } catch {}
-    });
+    // File fallback is single-consumer and request-id deduplicated with second-instance.
+    consumePendingProjectRequest();
+    pendingProjectTimer = setInterval(consumePendingProjectRequest, 400);
 
     app.on("activate", () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow();
-      else mainWindow?.show();
+      if (BrowserWindow.getAllWindows().length === 0) {
+        void ensureWindow().catch((err) => dialog.showErrorBox("窗口创建失败", String(err)));
+      } else {
+        showMainWindow();
+      }
     });
   });
 
   app.on("window-all-closed", () => {
-    // Don't quit on macOS-style; on Windows minimize to tray
-    // Only quit when isQuitting is true (from tray/menu)
+    // Don't quit on macOS-style; on Windows minimize to tray.
   });
 
   app.on("before-quit", () => {
     isQuitting = true;
+    if (pendingProjectTimer) clearInterval(pendingProjectTimer);
     if (mainWindow) saveWindowState(mainWindow);
     runtime.stop();
   });

@@ -104,6 +104,7 @@ export function setProjectCwd(baseUrl: string, cwd: string): Promise<void> {
         });
       }
     );
+    req.setTimeout(15000, () => req.destroy(new Error("setProjectCwd timed out")));
     req.on("error", reject);
     req.write(data);
     req.end();
@@ -113,8 +114,11 @@ export function setProjectCwd(baseUrl: string, cwd: string): Promise<void> {
 export class PiWebRuntime {
   private child: ChildProcess | null = null;
   private _info: RuntimeInfo | null = null;
-  private _stopping = false;
-  /** Called when pi-web exits unexpectedly (non-zero code). Set by main process. */
+  private startPromise: Promise<RuntimeInfo> | null = null;
+  private startGeneration = 0;
+  private readonly stoppingChildren = new WeakSet<ChildProcess>();
+  private readonly publishedChildren = new WeakSet<ChildProcess>();
+  /** Called when a ready pi-web process exits unexpectedly. */
   onCrash: ((code: number | null, signal: string | null) => void) | null = null;
 
   get info(): RuntimeInfo | null {
@@ -122,14 +126,28 @@ export class PiWebRuntime {
   }
 
   get isRunning(): boolean {
-    return this.child !== null && this.child.exitCode === null;
+    return this.child !== null && this.child.exitCode === null && this.child.signalCode === null;
   }
 
-  /** Start locked pi-web on a free loopback port using system node.exe */
+  /** Start locked pi-web on a free loopback port using system node.exe. */
   async start(cwd?: string): Promise<RuntimeInfo> {
-    if (this.isRunning) return this._info!;
+    if (this.isRunning && this._info) return this._info;
+    if (this.startPromise) return this.startPromise;
 
+    const generation = ++this.startGeneration;
+    const pending = this.startInternal(cwd, generation);
+    this.startPromise = pending;
+    try {
+      return await pending;
+    } finally {
+      if (this.startPromise === pending) this.startPromise = null;
+    }
+  }
+
+  private async startInternal(cwd: string | undefined, generation: number): Promise<RuntimeInfo> {
     const port = await findFreePort();
+    if (generation !== this.startGeneration) throw new Error("Pi Web startup was cancelled");
+
     const hostname = "127.0.0.1";
     const nodeExe = findSystemNode();
     const binPath = resolvePiWebBin();
@@ -138,7 +156,7 @@ export class PiWebRuntime {
     console.log(`[pi-web] bin:  ${binPath}`);
     console.log(`[pi-web] port: ${port}`);
 
-    this.child = spawn(
+    const child = spawn(
       nodeExe,
       [binPath, "--port", String(port), "-H", hostname, "--no-open"],
       {
@@ -148,8 +166,16 @@ export class PiWebRuntime {
         windowsHide: true,
       }
     );
+    this.child = child;
 
-    const child = this.child;
+    let rejectStartup: (reason: Error) => void = () => {};
+    const startupFailure = new Promise<never>((_resolve, reject) => {
+      rejectStartup = reject;
+    });
+
+    child.once("error", (err) => {
+      rejectStartup(new Error(`Failed to start Pi Web: ${err.message}`));
+    });
 
     child.stdout?.on("data", (chunk: Buffer) => {
       const text = chunk.toString().trim();
@@ -163,60 +189,83 @@ export class PiWebRuntime {
 
     child.on("exit", (code, signal) => {
       console.log(`[pi-web] exited code=${code} signal=${signal}`);
-      this.child = null;
-      this._info = null;
-      // Only notify crash if not a deliberate stop (taskkill gives non-zero exit)
-      if (!this._stopping && code !== 0 && code !== null) {
+      const wasDeliberate = this.stoppingChildren.has(child);
+      const wasPublished = this.publishedChildren.has(child);
+      this.stoppingChildren.delete(child);
+      this.publishedChildren.delete(child);
+      if (this.child === child) {
+        this.child = null;
+        this._info = null;
+      }
+      if (!wasPublished) {
+        rejectStartup(new Error(`Pi Web exited during startup (code=${code}, signal=${signal})`));
+      } else if (!wasDeliberate) {
         this.onCrash?.(code, signal);
       }
-      this._stopping = false;
     });
 
     const url = `http://${hostname}:${port}`;
-    await waitForReady(url);
+    try {
+      await Promise.race([waitForReady(url), startupFailure]);
+      if (cwd) await Promise.race([setProjectCwd(url, cwd), startupFailure]);
 
-    // Set project directory via pi-web's built-in API (no source modification)
-    if (cwd) {
-      await setProjectCwd(url, cwd);
+      if (
+        generation !== this.startGeneration ||
+        this.child !== child ||
+        child.exitCode !== null ||
+        child.signalCode !== null
+      ) {
+        throw new Error("Pi Web startup was cancelled or the process exited");
+      }
+
+      this.publishedChildren.add(child);
+      this._info = { port, url, pid: child.pid ?? -1 };
+      console.log(`[pi-web] ready at ${url} (pid=${this._info.pid})`);
+      return this._info;
+    } catch (err) {
+      this.stoppingChildren.add(child);
+      this.terminateChild(child);
+      if (this.child === child) {
+        this.child = null;
+        this._info = null;
+      }
+      throw err;
     }
-
-    this._info = { port, url, pid: child.pid ?? -1 };
-    console.log(`[pi-web] ready at ${url} (pid=${this._info.pid})`);
-    return this._info;
   }
 
-  /**
-   * Stop the child process tree.
-   * Windows: taskkill /T /F /PID  (kills entire tree)
-   * Then verify port is released.
-   */
-  stop(): void {
-    if (!this.child || this.child.exitCode !== null) {
-      this.child = null;
-      this._info = null;
-      return;
-    }
-
-    this._stopping = true; // suppress onCrash for deliberate stop
-
-    const pid = this.child.pid;
-    const port = this._info?.port;
-    console.log(`[pi-web] stopping pid=${pid} port=${port}`);
-
+  private terminateChild(child: ChildProcess): void {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const pid = child.pid;
     if (process.platform === "win32" && pid) {
       try {
         execSync(`taskkill /T /F /PID ${pid}`, { windowsHide: true });
         console.log(`[pi-web] taskkill /T /F /PID ${pid} OK`);
+        return;
       } catch (err: any) {
         console.error(`[pi-web] taskkill failed: ${err.message}`);
-        // Fallback: kill directly
-        this.child.kill("SIGKILL");
       }
-    } else {
-      this.child.kill("SIGKILL");
+    }
+    try { child.kill("SIGKILL"); } catch {}
+  }
+
+  /** Stop the child process tree and invalidate any startup still in progress. */
+  stop(): void {
+    this.startGeneration += 1;
+    this.startPromise = null;
+
+    const child = this.child;
+    if (!child) {
+      this._info = null;
+      return;
     }
 
-    this.child = null;
-    this._info = null;
+    this.stoppingChildren.add(child);
+    console.log(`[pi-web] stopping pid=${child.pid} port=${this._info?.port}`);
+    this.terminateChild(child);
+
+    if (this.child === child) {
+      this.child = null;
+      this._info = null;
+    }
   }
 }
