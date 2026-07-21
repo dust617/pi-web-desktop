@@ -1,11 +1,13 @@
 /**
  * Pi Web Runtime Manager
- * Spawns and manages the Pi Web (Next.js) child process on a dynamic loopback port.
+ * Spawns the LOCKED pi-web copy (resources/pi-web/) using SYSTEM node.exe.
+ * Never uses process.execPath (Electron binary) to run pi-web.
  */
-import { spawn, ChildProcess } from "child_process";
+import { spawn, execSync, ChildProcess } from "child_process";
 import * as net from "net";
 import * as http from "http";
 import * as path from "path";
+import * as fs from "fs";
 
 export interface RuntimeInfo {
   port: number;
@@ -30,33 +32,40 @@ export function findFreePort(): Promise<number> {
   });
 }
 
-/** Resolve the pi-web bin script path from global npm installation */
-function resolvePiWebBin(): string {
-  // Try global npm modules path
-  const globalRoot = path.join(
-    process.env.APPDATA || path.join(process.env.HOME || "", "AppData", "Roaming"),
-    "npm",
-    "node_modules",
-    "@agegr",
-    "pi-web",
-    "bin",
-    "pi-web.js"
-  );
-  return globalRoot;
+/** Find system node.exe via PATH (never use Electron's process.execPath) */
+function findSystemNode(): string {
+  try {
+    const result = execSync("where node", { encoding: "utf8" }).trim().split(/\r?\n/)[0];
+    if (result && fs.existsSync(result)) return result;
+  } catch {
+    // fall through
+  }
+  throw new Error("找不到系统 node.exe，请确认 Node.js 已安装并在 PATH 中。");
 }
 
-/** Wait until the HTTP endpoint returns 200 */
+/** Path to the locked pi-web bin inside resources/ */
+function resolvePiWebBin(): string {
+  // resources/pi-web/bin/pi-web.js relative to this compiled file (dist/)
+  const binPath = path.join(__dirname, "..", "resources", "pi-web", "bin", "pi-web.js");
+  if (!fs.existsSync(binPath)) {
+    throw new Error(`找不到锁定的 pi-web：${binPath}\n请先将 pi-web 复制到 resources/pi-web/`);
+  }
+  return binPath;
+}
+
+/** Wait until HTTP returns 2xx (strict: not <500, must be 200-299) */
 export function waitForReady(url: string, timeoutMs = 30000): Promise<void> {
   const start = Date.now();
   return new Promise((resolve, reject) => {
     const check = () => {
       if (Date.now() - start > timeoutMs) {
-        reject(new Error(`Pi Web did not become ready within ${timeoutMs}ms`));
+        reject(new Error(`Pi Web 在 ${timeoutMs}ms 内未就绪（需要 HTTP 2xx）`));
         return;
       }
       const req = http.get(url, (res) => {
         res.resume();
-        if (res.statusCode && res.statusCode < 500) {
+        const code = res.statusCode ?? 0;
+        if (code >= 200 && code < 300) {
           resolve();
         } else {
           setTimeout(check, 500);
@@ -84,21 +93,28 @@ export class PiWebRuntime {
     return this.child !== null && this.child.exitCode === null;
   }
 
-  /** Start Pi Web on a free loopback port. Resolves when HTTP is ready. */
+  /** Start locked pi-web on a free loopback port using system node.exe */
   async start(): Promise<RuntimeInfo> {
-    if (this.isRunning) {
-      return this._info!;
-    }
+    if (this.isRunning) return this._info!;
 
     const port = await findFreePort();
     const hostname = "127.0.0.1";
+    const nodeExe = findSystemNode();
     const binPath = resolvePiWebBin();
 
-    this.child = spawn(process.execPath, [binPath, "-p", String(port), "-H", hostname, "--no-open"], {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, PI_WEB_NO_OPEN: "1" },
-      windowsHide: true,
-    });
+    console.log(`[pi-web] node: ${nodeExe}`);
+    console.log(`[pi-web] bin:  ${binPath}`);
+    console.log(`[pi-web] port: ${port}`);
+
+    this.child = spawn(
+      nodeExe,
+      [binPath, "--port", String(port), "-H", hostname, "--no-open"],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, PI_WEB_NO_OPEN: "1", PORT: String(port), HOSTNAME: hostname },
+        windowsHide: true,
+      }
+    );
 
     const child = this.child;
 
@@ -126,19 +142,35 @@ export class PiWebRuntime {
     return this._info;
   }
 
-  /** Gracefully stop the child process */
+  /**
+   * Stop the child process tree.
+   * Windows: taskkill /T /F /PID  (kills entire tree)
+   * Then verify port is released.
+   */
   stop(): void {
-    if (this.child && this.child.exitCode === null) {
-      console.log("[pi-web] stopping...");
-      this.child.kill("SIGTERM");
-      // Force kill after 5s
-      const child = this.child;
-      setTimeout(() => {
-        if (child.exitCode === null) {
-          child.kill("SIGKILL");
-        }
-      }, 5000);
+    if (!this.child || this.child.exitCode !== null) {
+      this.child = null;
+      this._info = null;
+      return;
     }
+
+    const pid = this.child.pid;
+    const port = this._info?.port;
+    console.log(`[pi-web] stopping pid=${pid} port=${port}`);
+
+    if (process.platform === "win32" && pid) {
+      try {
+        execSync(`taskkill /T /F /PID ${pid}`, { windowsHide: true });
+        console.log(`[pi-web] taskkill /T /F /PID ${pid} OK`);
+      } catch (err: any) {
+        console.error(`[pi-web] taskkill failed: ${err.message}`);
+        // Fallback: kill directly
+        this.child.kill("SIGKILL");
+      }
+    } else {
+      this.child.kill("SIGKILL");
+    }
+
     this.child = null;
     this._info = null;
   }

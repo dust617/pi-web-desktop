@@ -40,20 +40,26 @@ async function createWindow(): Promise<void> {
     },
   });
 
-  // Only allow loading from our local Pi Web instance
+  // Only allow navigation to our local Pi Web instance
   mainWindow.webContents.on("will-navigate", (event, navUrl) => {
     if (!navUrl.startsWith(url)) {
       event.preventDefault();
-      shell.openExternal(navUrl);
+      // Only open https: links externally; block everything else
+      if (navUrl.startsWith("https:")) {
+        shell.openExternal(navUrl);
+      }
     }
   });
 
-  // Open external links in system browser
+  // Open external links in system browser — https: only
   mainWindow.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
     if (targetUrl.startsWith("http://127.0.0.1") || targetUrl.startsWith("http://localhost")) {
       return { action: "allow" };
     }
-    shell.openExternal(targetUrl);
+    if (targetUrl.startsWith("https:")) {
+      shell.openExternal(targetUrl);
+    }
+    // Non-https external links are silently blocked
     return { action: "deny" };
   });
 
@@ -66,9 +72,21 @@ async function createWindow(): Promise<void> {
 
 // ─── IPC Handlers ────────────────────────────────────────────────────
 
-ipcMain.handle("get-runtime-info", () => runtime.info);
+/** Validate that an IPC call comes from our local Pi Web frame only */
+function assertLocalSender(event: Electron.IpcMainInvokeEvent): void {
+  const senderUrl = event.senderFrame?.url ?? "";
+  if (!senderUrl.startsWith("http://127.0.0.1") && !senderUrl.startsWith("http://localhost")) {
+    throw new Error(`IPC rejected: untrusted sender frame ${senderUrl}`);
+  }
+}
 
-ipcMain.handle("select-files", async (_event, options?: { directories?: boolean }) => {
+ipcMain.handle("get-runtime-info", (event) => {
+  assertLocalSender(event);
+  return runtime.info;
+});
+
+ipcMain.handle("select-files", async (event, options?: { directories?: boolean }) => {
+  assertLocalSender(event);
   if (!mainWindow) return [];
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: options?.directories
@@ -78,15 +96,19 @@ ipcMain.handle("select-files", async (_event, options?: { directories?: boolean 
   return result.canceled ? [] : result.filePaths;
 });
 
-ipcMain.handle("show-in-explorer", (_event, filePath: string) => {
+ipcMain.handle("show-in-explorer", (event, filePath: string) => {
+  assertLocalSender(event);
   shell.showItemInFolder(filePath);
 });
 
-ipcMain.handle("get-version", () => ({
-  app: app.getVersion(),
-  electron: process.versions.electron,
-  node: process.versions.node,
-}));
+ipcMain.handle("get-version", (event) => {
+  assertLocalSender(event);
+  return {
+    app: app.getVersion(),
+    electron: process.versions.electron,
+    node: process.versions.node,
+  };
+});
 
 // ─── Menu ────────────────────────────────────────────────────────────
 
