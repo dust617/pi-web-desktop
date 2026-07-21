@@ -29,6 +29,12 @@ function parseProjectDir(argv: string[]): string | undefined {
 projectDir = parseProjectDir(process.argv);
 console.log("[main] initial projectDir:", projectDir);
 
+// File-based signal: write project dir so the running instance can pick it up
+const PENDING_FILE = path.join(app.getPath("userData"), "pending-project.txt");
+if (projectDir) {
+  try { fs.writeFileSync(PENDING_FILE, projectDir, "utf8"); } catch {}
+}
+
 // ─── Shared App Icon ─────────────────────────────────────────────────
 
 const ICON_PATH = path.join(__dirname, "..", "resources", "icon.png");
@@ -136,6 +142,23 @@ async function createWindow(): Promise<void> {
 
   mainWindow.on("closed", () => {
     mainWindow = null;
+  });
+
+  // Check pending-project.txt on focus: switch project if a new one was requested
+  mainWindow.on("focus", () => {
+    try {
+      if (!fs.existsSync(PENDING_FILE)) return;
+      const newDir = fs.readFileSync(PENDING_FILE, "utf8").trim();
+      fs.unlinkSync(PENDING_FILE);
+      if (newDir && newDir !== projectDir && fs.existsSync(newDir)) {
+        projectDir = newDir;
+        runtime.stop();
+        runtime
+          .start(projectDir)
+          .then((info) => mainWindow?.loadURL(info.url))
+          .catch((err) => dialog.showErrorBox("切换项目失败", err.message));
+      }
+    } catch {}
   });
 
   // Only allow navigation to our local Pi Web instance
@@ -442,7 +465,7 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on("second-instance", (_event, commandLine) => {
-    console.log("[main] second-instance commandLine:", JSON.stringify(commandLine));
+    try { fs.appendFileSync(path.join(app.getPath("userData"), "argv-debug.log"), `[${new Date().toISOString()}] second-instance commandLine: ${JSON.stringify(commandLine)}\n`); } catch {}
     // Parse --project from the second instance's command line
     const newDir = parseProjectDir(commandLine);
     if (newDir && newDir !== projectDir) {
