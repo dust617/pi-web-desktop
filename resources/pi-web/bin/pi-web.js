@@ -41,7 +41,7 @@ if (hostname) nextArgs.push("-H", hostname);
 // Always run next's JS entry with node directly — avoids .bin symlink issues
 // and path-with-spaces problems on Windows when shell: true is used.
 const child = spawn(process.execPath, [nextBin, ...nextArgs], {
-  cwd: process.env.PI_CWD || pkgDir,
+  cwd: pkgDir,
   stdio: ["inherit", "pipe", "inherit"],
   env: { ...process.env },
 });
