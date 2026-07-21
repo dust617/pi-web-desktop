@@ -13,3 +13,11 @@
 - useDragDrop.ts 当前只处理 image/*，非图片直接丢弃；加一行 window.__piDesktop 检测即可扩展。
 - pi-web 无 native 模块依赖，打包风险低。
 - 全局 pi-web + 补丁方案有根本矛盾：npm update -g 会覆盖补丁。改为内置锁定版本解决。
+
+## 2026-07-21 22:10 定时任务失败根因
+
+- 错误：`spawn pi ENOENT`，worker 子进程 27ms 内失败
+- 原因：pi-subagents 装在 ~/.pi/agent/npm/，pi-coding-agent 装在全局 npm（AppData/Roaming/npm），两个目录互相不可见
+- resolvePiCliScript 全部失败，fallback 到 spawn('pi')，Windows 后台进程无法解析 .cmd 文件
+- 修复：设置用户环境变量 PI_SUBAGENT_PI_BINARY=C:\Users\Administrator\AppData\Roaming\npm\pi.cmd
+- 重启 pi-web 后生效
