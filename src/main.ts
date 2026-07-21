@@ -130,7 +130,14 @@ async function createWindow(): Promise<void> {
     return { action: "deny" };
   });
 
+  console.log("[main] loading URL:", url);
+  mainWindow.webContents.on("did-finish-load", () => console.log("[main] page loaded OK"));
+  mainWindow.webContents.on("did-fail-load", (_e, code, desc) => console.error("[main] page FAILED:", code, desc));
+  mainWindow.webContents.on("console-message", (_e, level, msg) => {
+    if (level >= 2) console.error("[renderer]", msg);
+  });
   await mainWindow.loadURL(url);
+  console.log("[main] loadURL resolved");
 }
 
 // ─── Tray ────────────────────────────────────────────────────────────
