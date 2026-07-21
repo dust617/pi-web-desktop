@@ -84,6 +84,8 @@ export function waitForReady(url: string, timeoutMs = 30000): Promise<void> {
 export class PiWebRuntime {
   private child: ChildProcess | null = null;
   private _info: RuntimeInfo | null = null;
+  /** Called when pi-web exits unexpectedly (non-zero code). Set by main process. */
+  onCrash: ((code: number | null, signal: string | null) => void) | null = null;
 
   get info(): RuntimeInfo | null {
     return this._info;
@@ -132,6 +134,10 @@ export class PiWebRuntime {
       console.log(`[pi-web] exited code=${code} signal=${signal}`);
       this.child = null;
       this._info = null;
+      // Notify main process on unexpected crash (code 0 = normal stop via taskkill)
+      if (code !== 0 && code !== null) {
+        this.onCrash?.(code, signal);
+      }
     });
 
     const url = `http://${hostname}:${port}`;

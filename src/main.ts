@@ -133,9 +133,6 @@ async function createWindow(): Promise<void> {
   console.log("[main] loading URL:", url);
   mainWindow.webContents.on("did-finish-load", () => console.log("[main] page loaded OK"));
   mainWindow.webContents.on("did-fail-load", (_e, code, desc) => console.error("[main] page FAILED:", code, desc));
-  mainWindow.webContents.on("console-message", (_e, level, msg) => {
-    if (level >= 2) console.error("[renderer]", msg);
-  });
   await mainWindow.loadURL(url);
   console.log("[main] loadURL resolved");
 }
@@ -343,12 +340,36 @@ if (!gotLock) {
       mainWindow.show();
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
+    } else {
+      // Window was destroyed (edge case) — recreate
+      createWindow();
     }
   });
 
   app.whenReady().then(() => {
     buildMenu();
     createTray();
+
+    // Crash recovery: if pi-web exits unexpectedly, offer to restart
+    runtime.onCrash = (code, signal) => {
+      dialog
+        .showMessageBox({
+          type: "warning",
+          title: "Pi Web 意外退出",
+          message: `Pi Web 服务意外退出（退出码：${code ?? signal}）`,
+          buttons: ["重启服务", "忽略"],
+          defaultId: 0,
+        })
+        .then(({ response }) => {
+          if (response === 0) {
+            runtime
+              .start()
+              .then((info) => mainWindow?.loadURL(info.url))
+              .catch((err) => dialog.showErrorBox("重启失败", err.message));
+          }
+        });
+    };
+
     createWindow();
 
     app.on("activate", () => {
