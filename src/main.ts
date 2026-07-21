@@ -236,6 +236,16 @@ ipcMain.handle("get-version", (event) => {
   };
 });
 
+ipcMain.handle("check-file-exists", (event, filePath: string): boolean => {
+  assertLocalSender(event);
+  if (typeof filePath !== "string" || filePath.length === 0) return false;
+  try {
+    return fs.existsSync(filePath);
+  } catch {
+    return false;
+  }
+});
+
 // ─── Menu ────────────────────────────────────────────────────────────
 
 function buildMenu(): void {
