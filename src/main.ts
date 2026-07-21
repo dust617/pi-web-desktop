@@ -518,6 +518,27 @@ if (!gotLock) {
 
     createWindow();
 
+    // Watch pending-project.txt: when a second instance writes it, switch project
+    fs.watchFile(PENDING_FILE, { interval: 400 }, () => {
+      try {
+        if (!fs.existsSync(PENDING_FILE)) return;
+        const newDir = fs.readFileSync(PENDING_FILE, "utf8").trim();
+        fs.unlinkSync(PENDING_FILE);
+        if (newDir && newDir !== projectDir && fs.existsSync(newDir)) {
+          projectDir = newDir;
+          runtime.stop();
+          runtime
+            .start(projectDir)
+            .then((info) => {
+              mainWindow?.loadURL(info.url);
+              mainWindow?.show();
+              mainWindow?.focus();
+            })
+            .catch((err) => dialog.showErrorBox("切换项目失败", err.message));
+        }
+      } catch {}
+    });
+
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
       else mainWindow?.show();
