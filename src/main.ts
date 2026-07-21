@@ -3,6 +3,7 @@
  * Stage 1: tray, window state memory, enhanced menu, detailed error dialogs.
  */
 import { app, BrowserWindow, ipcMain, dialog, shell, Menu, Tray, nativeImage } from "electron";
+import { execSync } from "child_process";
 import * as path from "path";
 import * as fs from "fs";
 import { PiWebRuntime } from "./pi-web-runtime";
@@ -11,6 +12,18 @@ const runtime = new PiWebRuntime();
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
+let projectDir: string | undefined;
+
+// Parse --project <path> from command line
+function parseProjectDir(argv: string[]): string | undefined {
+  const idx = argv.indexOf("--project");
+  if (idx !== -1 && argv[idx + 1]) {
+    const p = argv[idx + 1];
+    if (fs.existsSync(p)) return p;
+  }
+  return undefined;
+}
+projectDir = parseProjectDir(process.argv);
 
 // ─── Window State Persistence ────────────────────────────────────────
 
@@ -60,7 +73,7 @@ async function createWindow(): Promise<void> {
   let url: string;
 
   try {
-    const info = await runtime.start();
+    const info = await runtime.start(projectDir);
     url = info.url;
   } catch (err: any) {
     const detail = [
@@ -250,6 +263,69 @@ ipcMain.handle("check-file-exists", (event, filePath: string): boolean => {
   }
 });
 
+// ─── Context Menu Registration ──────────────────────────────────────
+
+function getContextMenuCommand(): string {
+  if (app.isPackaged) {
+    // Packaged: exe is process.execPath
+    return `"${process.execPath}" --project "%V"`;
+  }
+  // Development: electron.exe + app dir
+  const electronExe = process.execPath;
+  const appDir = path.join(__dirname, "..");
+  return `"${electronExe}" "${appDir}" --project "%V"`;
+}
+
+function registerContextMenu(): void {
+  const cmd = getContextMenuCommand();
+  const icon = app.isPackaged ? process.execPath : path.join(__dirname, "..", "resources", "pi-web", "favicon.ico");
+  const regScript = [
+    `Windows Registry Editor Version 5.00`,
+    ``,
+    `[HKEY_CLASSES_ROOT\\Directory\\shell\\PiWebDesktop]`,
+    `@="在此打开 Pi Web"`,
+    `"Icon"="${icon.replace(/\\/g, "\\\\")},0"`,
+    ``,
+    `[HKEY_CLASSES_ROOT\\Directory\\shell\\PiWebDesktop\\command]`,
+    `@="${cmd.replace(/\\/g, "\\\\")}"`,
+    ``,
+    `[HKEY_CLASSES_ROOT\\Directory\\Background\\shell\\PiWebDesktop]`,
+    `@="在此打开 Pi Web"`,
+    `"Icon"="${icon.replace(/\\/g, "\\\\")},0"`,
+    ``,
+    `[HKEY_CLASSES_ROOT\\Directory\\Background\\shell\\PiWebDesktop\\command]`,
+    `@="${cmd.replace(/\\/g, "\\\\")}"`,
+  ].join("\r\n");
+
+  const tmpReg = path.join(app.getPath("temp"), "pi-web-context-menu.reg");
+  fs.writeFileSync(tmpReg, regScript, "utf8");
+  try {
+    execSync(`regedit /s "${tmpReg}"`, { windowsHide: true });
+    dialog.showMessageBox({ title: "右键菜单", message: "已注册：在文件夹右键 → 在此打开 Pi Web" });
+  } catch (err: any) {
+    dialog.showErrorBox("注册失败", `需要管理员权限或手动导入：\n${tmpReg}\n\n${err.message}`);
+  }
+}
+
+function unregisterContextMenu(): void {
+  const regScript = [
+    `Windows Registry Editor Version 5.00`,
+    ``,
+    `[-HKEY_CLASSES_ROOT\\Directory\\shell\\PiWebDesktop]`,
+    ``,
+    `[-HKEY_CLASSES_ROOT\\Directory\\Background\\shell\\PiWebDesktop]`,
+  ].join("\r\n");
+
+  const tmpReg = path.join(app.getPath("temp"), "pi-web-context-menu-remove.reg");
+  fs.writeFileSync(tmpReg, regScript, "utf8");
+  try {
+    execSync(`regedit /s "${tmpReg}"`, { windowsHide: true });
+    dialog.showMessageBox({ title: "右键菜单", message: "已移除右键菜单项" });
+  } catch (err: any) {
+    dialog.showErrorBox("移除失败", err.message);
+  }
+}
+
 // ─── Menu ────────────────────────────────────────────────────────────
 
 function buildMenu(): void {
@@ -284,6 +360,16 @@ function buildMenu(): void {
           label: "最小化到托盘",
           click: () => mainWindow?.hide(),
         },
+        { type: "separator" },
+        {
+          label: "注册文件夹右键菜单",
+          click: () => registerContextMenu(),
+        },
+        {
+          label: "移除文件夹右键菜单",
+          click: () => unregisterContextMenu(),
+        },
+        { type: "separator" },
         {
           label: "退出 (&Q)",
           accelerator: "Ctrl+Q",
@@ -335,13 +421,29 @@ const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
-  app.on("second-instance", () => {
-    if (mainWindow) {
+  app.on("second-instance", (_event, commandLine) => {
+    // Parse --project from the second instance's command line
+    const newDir = parseProjectDir(commandLine);
+    if (newDir && newDir !== projectDir) {
+      // Switch project: restart pi-web with new cwd
+      projectDir = newDir;
+      runtime.stop();
+      runtime
+        .start(projectDir)
+        .then((info) => {
+          if (mainWindow) {
+            mainWindow.loadURL(info.url);
+            mainWindow.show();
+            if (mainWindow.isMinimized()) mainWindow.restore();
+            mainWindow.focus();
+          }
+        })
+        .catch((err) => dialog.showErrorBox("切换项目失败", err.message));
+    } else if (mainWindow) {
       mainWindow.show();
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
     } else {
-      // Window was destroyed (edge case) — recreate
       createWindow();
     }
   });

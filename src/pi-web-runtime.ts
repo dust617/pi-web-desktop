@@ -96,7 +96,7 @@ export class PiWebRuntime {
   }
 
   /** Start locked pi-web on a free loopback port using system node.exe */
-  async start(): Promise<RuntimeInfo> {
+  async start(cwd?: string): Promise<RuntimeInfo> {
     if (this.isRunning) return this._info!;
 
     const port = await findFreePort();
@@ -112,6 +112,7 @@ export class PiWebRuntime {
       nodeExe,
       [binPath, "--port", String(port), "-H", hostname, "--no-open"],
       {
+        cwd: cwd || undefined,
         stdio: ["ignore", "pipe", "pipe"],
         env: { ...process.env, PI_WEB_NO_OPEN: "1", PORT: String(port), HOSTNAME: hostname },
         windowsHide: true,
