@@ -81,6 +81,35 @@ export function waitForReady(url: string, timeoutMs = 30000): Promise<void> {
   });
 }
 
+/** Set pi-web project directory via its built-in API (no source modification needed) */
+export function setProjectCwd(baseUrl: string, cwd: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify({ cwd });
+    const req = http.request(
+      `${baseUrl}/api/cwd/validate`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) },
+      },
+      (res) => {
+        let body = "";
+        res.on("data", (c) => (body += c));
+        res.on("end", () => {
+          if (res.statusCode === 200) {
+            console.log(`[pi-web] project cwd set: ${cwd}`);
+            resolve();
+          } else {
+            reject(new Error(`setProjectCwd failed HTTP ${res.statusCode}: ${body}`));
+          }
+        });
+      }
+    );
+    req.on("error", reject);
+    req.write(data);
+    req.end();
+  });
+}
+
 export class PiWebRuntime {
   private child: ChildProcess | null = null;
   private _info: RuntimeInfo | null = null;
@@ -145,6 +174,11 @@ export class PiWebRuntime {
 
     const url = `http://${hostname}:${port}`;
     await waitForReady(url);
+
+    // Set project directory via pi-web's built-in API (no source modification)
+    if (cwd) {
+      await setProjectCwd(url, cwd);
+    }
 
     this._info = { port, url, pid: child.pid ?? -1 };
     console.log(`[pi-web] ready at ${url} (pid=${this._info.pid})`);
