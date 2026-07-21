@@ -1,0 +1,22 @@
+{
+  "name": "pi-web-desktop",
+  "version": "0.1.0",
+  "description": "Electron thin shell for Pi Web – desktop edition",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "npm run build && electron .",
+    "dev": "tsc --watch"
+  },
+  "keywords": [
+    "pi",
+    "electron",
+    "desktop"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^37.10.3",
+    "typescript": "^5.9.3"
+  }
+}
