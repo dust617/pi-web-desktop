@@ -1,0 +1,70 @@
+{
+  "sessionId": "00000000-0000-0000-0000-000000000001",
+  "filePath": "C:\\Users\\example\\.pi\\agent\\sessions\\--D--project--\\2026-01-01T00-00-00-000Z_00000000-0000-0000-0000-000000000001.jsonl",
+  "info": {
+    "path": "C:\\Users\\example\\.pi\\agent\\sessions\\--D--project--\\2026-01-01T00-00-00-000Z_00000000-0000-0000-0000-000000000001.jsonl",
+    "id": "00000000-0000-0000-0000-000000000001",
+    "cwd": "D:\\project",
+    "name": null,
+    "created": "2026-01-01T00:00:00.000Z",
+    "modified": "2026-01-01T01:00:00.000Z",
+    "messageCount": 4,
+    "firstMessage": "Hello, help me with my code",
+    "parentSessionId": null
+  },
+  "leafId": "entry-0004",
+  "tree": [
+    {
+      "entry": { "id": "entry-0001", "type": "user" },
+      "children": [
+        {
+          "entry": { "id": "entry-0002", "type": "assistant" },
+          "children": [
+            {
+              "entry": { "id": "entry-0003", "type": "user" },
+              "children": [
+                {
+                  "entry": { "id": "entry-0004", "type": "assistant" },
+                  "children": [],
+                  "compressedEntryIds": []
+                }
+              ],
+              "compressedEntryIds": []
+            }
+          ],
+          "compressedEntryIds": []
+        }
+      ],
+      "compressedEntryIds": []
+    }
+  ],
+  "context": {
+    "messages": [
+      {
+        "role": "user",
+        "content": [{ "type": "text", "text": "Hello, help me with my code" }]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          { "type": "thinking", "text": "[synthetic thinking block]" },
+          { "type": "text", "text": "Sure! What do you need help with?" }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [{ "type": "text", "text": "Fix the bug in main.py" }]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          { "type": "toolCall", "id": "tc-001", "name": "read", "input": { "path": "main.py" } },
+          { "type": "text", "text": "I found the issue. The variable was not initialized." }
+        ]
+      }
+    ],
+    "entryIds": ["entry-0001", "entry-0002", "entry-0003", "entry-0004"],
+    "thinkingLevel": "high",
+    "model": { "provider": "example-provider", "modelId": "example-model" }
+  }
+}

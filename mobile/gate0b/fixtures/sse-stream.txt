@@ -1,0 +1,33 @@
+data: {"type":"connected","sessionId":"00000000-0000-0000-0000-000000000001"}
+
+data: {"type":"agent_start","sessionId":"00000000-0000-0000-0000-000000000001"}
+
+data: {"type":"message_start","role":"assistant","entryId":"entry-0010"}
+
+data: {"type":"message_update","entryId":"entry-0010","delta":{"type":"text","text":"Sure"}}
+
+data: {"type":"message_update","entryId":"entry-0010","delta":{"type":"text","text":"! What"}}
+
+data: {"type":"message_update","entryId":"entry-0010","delta":{"type":"text","text":" do you need?"}}
+
+data: {"type":"message_end","entryId":"entry-0010"}
+
+data: {"type":"agent_end","sessionId":"00000000-0000-0000-0000-000000000001"}
+
+:
+
+data: {"type":"agent_start","sessionId":"00000000-0000-0000-0000-000000000001"}
+
+data: {"type":"message_start","role":"assistant","entryId":"entry-0011"}
+
+data: {"type":"tool_execution_start","entryId":"entry-0011","toolName":"read","toolCallId":"tc-001"}
+
+data: {"type":"tool_execution_end","entryId":"entry-0011","toolName":"read","toolCallId":"tc-001"}
+
+data: {"type":"message_update","entryId":"entry-0011","delta":{"type":"text","text":"I found the issue."}}
+
+data: {"type":"message_end","entryId":"entry-0011"}
+
+data: {"type":"agent_end","sessionId":"00000000-0000-0000-0000-000000000001"}
+
+:

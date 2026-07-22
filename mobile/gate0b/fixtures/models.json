@@ -1,0 +1,19 @@
+{
+  "models": {
+    "example-provider:model-a": "Example Model A",
+    "example-provider:model-b": "Example Model B",
+    "other-provider:model-c": "Other Model C"
+  },
+  "modelList": [
+    { "id": "model-a", "name": "Example Model A", "provider": "example-provider" },
+    { "id": "model-b", "name": "Example Model B", "provider": "example-provider" },
+    { "id": "model-c", "name": "Other Model C", "provider": "other-provider" }
+  ],
+  "defaultModel": { "provider": "example-provider", "modelId": "model-a" },
+  "thinkingLevels": {
+    "example-provider:model-a": ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+    "example-provider:model-b": ["off", "low", "medium", "high"],
+    "other-provider:model-c": ["off", "medium", "high"]
+  },
+  "thinkingLevelMaps": {}
+}

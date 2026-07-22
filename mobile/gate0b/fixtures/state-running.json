@@ -1,0 +1,19 @@
+{
+  "running": true,
+  "state": {
+    "sessionId": "00000000-0000-0000-0000-000000000001",
+    "isStreaming": true,
+    "isPromptRunning": true,
+    "isCompacting": false,
+    "autoCompactionEnabled": true,
+    "autoRetryEnabled": true,
+    "model": { "id": "example-model", "provider": "example-provider" },
+    "messageCount": 0,
+    "pendingMessageCount": 0,
+    "queuedMessages": { "steering": [], "followUp": [] },
+    "contextUsage": { "percent": 45.5, "contextWindow": 128000, "tokens": 58240 },
+    "thinkingLevel": "high",
+    "extensionStatuses": [{ "key": "mcp", "text": "MCP: 2/4 servers" }],
+    "extensionWidgets": []
+  }
+}

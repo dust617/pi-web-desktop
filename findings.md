@@ -37,3 +37,16 @@
 - 改用 `set_session_name` 强制空会话落盘后仍复现：实际是空会话文件尚未落盘，按临时路径查询时 SessionManager 用 `process.cwd()` 构造了临时头；因此后台预建 `?session=` 方案不可行。
 - 正确方案是 `/?cwd=` 直接初始化 pi-web 前端已有的 newSessionCwd 状态；隐藏 Electron 已验证目标中文路径及其标记文件均出现在 Explorer。
 - 最终审查补充：runtime 需要启动 generation/提前退出竞速处理；fallback 应改成每请求一个 spool 文件；popup/IPC 必须使用当前 runtime 精确 origin。
+
+## 2026-07-22 移动端实现审查
+
+- 当前源码可编译；Gate 0B 合成 fixture 检查 27/27 通过；当前 62810 BFF 对真实 62809 pi-web 的只读契约检查 13 项通过。
+- 两个发布 EXE 的 `app.asar` 含 `dist/mobile-bridge.js` 与 `resources/mobile/*`，且移动静态资源与当前工作区哈希一致。
+- 严重鉴权缺口：`GET /mobile/auth/pairing-code` 未鉴权。loopback 绑定不能把它视为本地专用，因为 cloudflared 会把公网请求转发到同一 loopback 服务。
+- 严重集成缺口：`src/main.ts` 使用 `new MobileBridge({ runtime })`，未传 `allowedOrigins`；公网同源页面的 POST Origin 会被 MobileBridge 拒绝。standalone 脚本单独硬编码了公网 Origin，两条启动路径行为不一致。
+- PWA 项目卡片把 `JSON.stringify(projectId)` 直接嵌入双引号 `onclick` 属性；HTML 解析确认属性在 projectId 的双引号处截断，项目列表无法可靠进入会话列表。
+- `readBody()` 超限后 `req.destroy()`；实测 2KB 登录请求得到 socket reset，而不是代码试图返回的 400/413 JSON。
+- “刷新配对码”托盘项只显示现有码，没有调用 regenerate/revoke；命名与行为不一致。
+- 当前公网 DNS 未完成：1.1.1.1、8.8.8.8、9.9.9.9 查询 NS 均仍为 dnsowl，`mobile.tt56677.top` NXDOMAIN；尚未完成 Gate 0A、真机、长 SSE 和网络切换验收。
+- 发现多个并行 `ns-watchdog.sh` 和 `tunnel-auto-setup-v2.sh` 实例；脚本共享同一日志/状态文件，传播后还会并发 taskkill/start cloudflared，存在竞态。
+- 移动端主要源码、资源、构建配置和文档均未进入当前 HEAD；fresh clone 不包含 MobileBridge，实现存在丢失与不可复现风险。

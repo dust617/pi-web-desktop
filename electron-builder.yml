@@ -1,0 +1,47 @@
+appId: com.piweb.desktop
+productName: Pi Web Desktop
+copyright: Copyright © 2026
+
+directories:
+  output: release
+  buildResources: resources
+
+files:
+  - dist/**/*
+  - resources/pi-web/**/*
+  - resources/mobile/**/*
+  - resources/icon.png
+  - resources/icon.ico
+  - resources/icon-32.png
+  - package.json
+
+# Exclude heavy dev artifacts from the asar/app
+asar: true
+asarUnpack:
+  - resources/pi-web/**/*
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  artifactName: "Pi-Web-Desktop-${version}-${arch}.${ext}"
+  icon: resources/icon.ico
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Pi Web Desktop
+  installerIcon: resources/icon.ico
+  uninstallerIcon: resources/icon.ico
+  installerHeaderIcon: resources/icon.ico
+  deleteAppDataOnUninstall: false
+
+portable:
+  artifactName: "Pi-Web-Desktop-${version}-portable.${ext}"
+
+# Do NOT bundle node_modules — pi-web has its own locked copy in resources/
+npmRebuild: false

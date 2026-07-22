@@ -1,5 +1,29 @@
 # progress.md
 
+## 2026-07-22 阶段3 打包完成
+- electron-builder 26.15.3 打包成功。
+- NSIS 安装版：`release/Pi-Web-Desktop-0.1.0-x64.exe` (291MB)
+- 便携版：`release/Pi-Web-Desktop-0.1.0-portable.exe` (290MB)
+- 包含：Electron 37 + 锁定 pi-web (885MB) + MobileBridge BFF + PWA 壳 + cloudflared
+- 未签名（自用足够）。
+- 阶段 0-3 全部完成。
+
+## 2026-07-22 隧道自动配置
+- 域名 `tt56677.top` NS 已提交 Cloudflare，等待传播。
+- `tunnel-auto-setup-v2.sh` 后台轮询 NS（每2分钟，最多6小时）。
+- NS 传播后自动：cloudflared login → create tunnel → route DNS → 启动隧道。
+- 唯一人工步骤：NS 传播后浏览器弹出授权页面需点 Authorize。
+- `start-tunnel.bat` 已写好，以后双击即可启动隧道。
+
+## 2026-07-22 MobileBridge BFF + PWA 壳
+- 新建 `src/mobile-bridge.ts`：loopback-only HTTP BFF，12个API端点 + 静态文件服务 + Cookie鉴权 + SSE代理 + 8MiB历史硬限 + 字段过滤。
+- 新建 `resources/mobile/index.html`：单文件 PWA SPA，登录/项目列表/会话列表/聊天视图/SSE流式/模型切换/中止。
+- 新建 `resources/mobile/manifest.json` + `sw.js`：PWA manifest + 最小 Service Worker（仅缓存壳）。
+- 修改 `src/main.ts`：集成 MobileBridge 生命周期（启动/停止/托盘配对码显示/复制）。
+- TypeScript 编译零错误。
+- 集成自测 40/40 通过：health、静态文件、鉴权、配对码、登录/登出、项目列表、会话列表、历史、状态、模型、缓存头。
+- 域名 `tt56677.top` 已购买（Namesilo），Cloudflare NS 已配置，等待传播。
+
 ## 2026-07-22 资源管理器右键切换项目排查
 - 已确认右键注册命令能把目标目录传给第二 Electron 进程。
 - 已定位第二实例 argv 重排、双消费者、旧 URL 刷新、runtime 退出竞态及会话 cwd/全局 cwd 错位。
@@ -42,3 +66,31 @@
 - 当前阶段：0（未开始）
 - 本次完成：计划全面修订，确认内置锁定 pi-web 方案，同步所有连续性文档
 - 状态：等待定时任务执行
+
+## 2026-07-22 域名修正 + 全链路本地打通
+- 域名实为 `tt56677.top`（非 tt58677），已全局修正 src/脚本/文档。
+- Namesilo NS 已改 cloudflare；邮箱已验证（解除 suspended 风险）；错 zone tt58677 已删。
+- cloudflared 重新 login 绑定新 zone（旧 cert.pem 权限绑死旧 zone 导致 route auth error）。
+- Tunnel `pi-mobile` (5a18d771...) 运行中，4 条 QUIC 连接；CNAME `mobile.tt56677.top` 已写 zone。
+- 独立 BFF：`standalone-bff.mjs` 以 duck-type runtime 挂到已存在的 62809，监听 62810，
+  不新起 runtime、不打断当前 Electron 会话。health ok，鉴权生效，静态壳 200。
+- 当前配对码：**102835**（BFF 重启会变，见 bff-pairing-code.txt）。
+- 本地全链路绿：手机→cloudflare→tunnel→62810 BFF→62809 pi-web。
+- 唯一阻塞：`.top` 注册局 NS 委派仍 dnsowl（Namesilo→注册局延迟），watchdog v3 自动收尾。
+
+## 2026-07-22 交接文档
+- 已写自包含交接文档 `STATUS_HANDOFF.md`，含：关键标识表、架构链路、各组件状态(带判定依据)、
+  唯一阻塞(注册局 NS 委派)、watchdog v3 自动收尾逻辑、踩坑清单、文件清单、自查命令、给检查者核查清单、实时快照。
+- 重点提醒检查者：Git Bash 下 `ps grep` 对 nohup 进程匹配不到≠进程死，以端口监听+status 增长为准。
+- 当前配对码 102835；NS 仍 dnsowl，等传播，watchdog 自动收尾。
+
+## 2026-07-22 移动端进度与质量检查
+
+- 完成源码、PWA、打包、运行进程、DNS/Tunnel、Git 状态和连续性文档审查。
+- 验证通过：`npm run build`；Gate 0B fixture 27/27；PWA inline JS 语法；当前本地 BFF 只读契约 13 项；发布包包含当前 mobile 文件。
+- 当前本地链路可读：62809 pi-web、62810 standalone BFF 均监听；项目/会话/历史/状态/模型 DTO 可读取且 state 未泄露 systemPrompt/sessionFile。
+- 当前公网链路未交付：域名权威 NS 仍为 dnsowl，手机入口 NXDOMAIN，未做真机与耐久性验收。
+- 确认阻塞问题：公开 pairing-code 路由、集成版公网 POST 403、项目卡片 onclick 属性破坏、超限请求 socket reset。
+- 确认工程问题：宣称的 40/40 脚本不在仓库；多套重复 watchdog/setup 正运行；移动端实现尚未提交。
+- 本次仅检查和更新连续性文档，未停止现有 pi-web/BFF/cloudflared/watchdog，未发送 prompt、切模型或中止会话。
+- 已整理可直接转发给后续开发者/修复 Agent 的自包含报告：`MOBILE_AUDIT_REPORT.md`，包含进度、证据、问题分级、修复建议、测试矩阵和验收标准。

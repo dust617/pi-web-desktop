@@ -7,6 +7,7 @@ import { execSync } from "child_process";
 import * as path from "path";
 import * as fs from "fs";
 import { PiWebRuntime } from "./pi-web-runtime";
+import { MobileBridge, resolveAllowedOrigins } from "./mobile-bridge";
 
 interface ProjectOpenRequest {
   requestId: string;
@@ -14,6 +15,7 @@ interface ProjectOpenRequest {
 }
 
 const runtime = new PiWebRuntime();
+let mobileBridge: MobileBridge | null = null;
 let mainWindow: BrowserWindow | null = null;
 let windowReadyPromise: Promise<void> | null = null;
 let tray: Tray | null = null;
@@ -266,6 +268,37 @@ function createTray(): void {
         } catch (err: any) {
           dialog.showErrorBox("重启失败", err.message);
         }
+      },
+    },
+    { type: "separator" },
+    {
+      label: `移动端配对码: ${mobileBridge?.pairingCode ?? "..."}`,
+      enabled: false,
+    },
+    ...(resolveAllowedOrigins().length === 0
+      ? [{ label: "移动端: 仅本机模式 (PI_MOBILE_ORIGIN 为空)", enabled: false }]
+      : []),
+    {
+      label: "复制配对码",
+      click: () => {
+        const code = mobileBridge?.pairingCode;
+        if (code) {
+          require("electron").clipboard.writeText(code);
+          dialog.showMessageBox({ title: "配对码", message: `已复制: ${code}` });
+        }
+      },
+    },
+    {
+      label: "刷新配对码 (吊销所有手机会话)",
+      click: () => {
+        if (!mobileBridge) return;
+        // Truly rotate: new code + revoke every existing mobile session (P2-2).
+        const code = mobileBridge.rotateCode();
+        createTray(); // rebuild menu so the displayed code updates
+        dialog.showMessageBox({
+          title: "配对码已刷新",
+          message: `新配对码: ${code}\n\n旧配对码及所有已登录的手机会话已吊销。`,
+        });
       },
     },
     { type: "separator" },
@@ -650,7 +683,18 @@ if (!gotLock) {
         });
     };
 
-    void ensureWindow().catch((err) => debugLog(`initial window failed: ${String(err)}`));
+    void ensureWindow().then(async () => {
+      // Start MobileBridge after window is ready (needs runtime.info)
+      try {
+        mobileBridge = new MobileBridge({ runtime, allowedOrigins: resolveAllowedOrigins() });
+        const bridgePort = await mobileBridge.start();
+        console.log(`[main] MobileBridge started on port ${bridgePort}, code: ${mobileBridge.pairingCode}`);
+        createTray(); // refresh tray with pairing code
+      } catch (err: any) {
+        console.error("[main] MobileBridge start failed:", err.message);
+        // Non-fatal: mobile features unavailable, desktop still works
+      }
+    }).catch((err) => debugLog(`initial window failed: ${String(err)}`));
 
     // File fallback is single-consumer and request-id deduplicated with second-instance.
     consumePendingProjectRequest();
@@ -673,6 +717,7 @@ if (!gotLock) {
     isQuitting = true;
     if (pendingProjectTimer) clearInterval(pendingProjectTimer);
     if (mainWindow) saveWindowState(mainWindow);
+    mobileBridge?.stop().catch(() => {});
     runtime.stop();
   });
 }

@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#16213e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/mobile/manifest.json">
+<title>Pi Web Mobile</title>
+<style>
+:root {
+  --bg: #0f0f1a;
+  --surface: #1a1a2e;
+  --surface2: #222240;
+  --border: #2a2a4a;
+  --text: #e0e0e0;
+  --text2: #888;
+  --accent: #4fc3f7;
+  --accent2: #29b6f6;
+  --danger: #ef5350;
+  --success: #66bb6a;
+  --user-bg: #1e3a5f;
+  --assistant-bg: #1a1a2e;
+  --tool-bg: #1a2a1a;
+  --radius: 12px;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+html,body { height:100%; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--text); font-size:15px; -webkit-tap-highlight-color:transparent; }
+body { display:flex; flex-direction:column; overflow:hidden; }
+
+/* ── Header ─ */
+.header { display:flex; align-items:center; gap:8px; padding:12px 16px; background:var(--surface); border-bottom:1px solid var(--border); min-height:52px; flex-shrink:0; }
+.header .back { background:none; border:none; color:var(--accent); font-size:20px; padding:4px 8px; cursor:pointer; }
+.header .title { flex:1; font-size:16px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.header .status { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+.header .status.ok { background:var(--success); }
+.header .status.err { background:var(--danger); }
+.header .status.loading { background:var(--accent); animation:pulse 1s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+/* ── Content ── */
+.content { flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; }
+
+/* ── Login ── */
+.login-wrap { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; padding:32px; gap:20px; }
+.login-wrap h1 { font-size:24px; color:var(--accent); }
+.login-wrap p { color:var(--text2); text-align:center; font-size:14px; }
+.login-wrap input { width:100%; max-width:280px; padding:14px 16px; border-radius:var(--radius); border:1px solid var(--border); background:var(--surface2); color:var(--text); font-size:24px; text-align:center; letter-spacing:8px; outline:none; }
+.login-wrap input:focus { border-color:var(--accent); }
+.login-wrap button { width:100%; max-width:280px; padding:14px; border-radius:var(--radius); border:none; background:var(--accent); color:#000; font-size:16px; font-weight:600; cursor:pointer; }
+.login-wrap button:active { opacity:0.8; }
+.login-wrap .error { color:var(--danger); font-size:13px; min-height:20px; }
+
+/* ── List views ── */
+.list { padding:8px; }
+.list-item { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:14px 16px; margin-bottom:8px; cursor:pointer; transition:background 0.15s; }
+.list-item:active { background:var(--surface2); }
+.list-item .name { font-weight:600; font-size:15px; margin-bottom:4px; display:flex; align-items:center; gap:8px; }
+.list-item .name .dot { width:6px; height:6px; border-radius:50%; background:var(--success); flex-shrink:0; }
+.list-item .meta { color:var(--text2); font-size:12px; display:flex; gap:12px; }
+.list-item .preview { color:var(--text2); font-size:13px; margin-top:6px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.empty { text-align:center; color:var(--text2); padding:48px 16px; font-size:14px; }
+
+/* ── Chat ── */
+.chat-messages { padding:12px 12px 8px; display:flex; flex-direction:column; gap:8px; }
+.msg { max-width:92%; padding:10px 14px; border-radius:var(--radius); font-size:14px; line-height:1.5; word-break:break-word; white-space:pre-wrap; }
+.msg.user { align-self:flex-end; background:var(--user-bg); border-bottom-right-radius:4px; }
+.msg.assistant { align-self:flex-start; background:var(--assistant-bg); border:1px solid var(--border); border-bottom-left-radius:4px; }
+.msg.tool { align-self:flex-start; background:var(--tool-bg); border:1px solid #2a3a2a; font-size:12px; font-family:monospace; max-height:200px; overflow:auto; }
+.msg.system { align-self:center; background:transparent; color:var(--text2); font-size:12px; padding:4px 8px; }
+.msg .thinking { color:var(--text2); font-style:italic; font-size:12px; border-left:2px solid var(--border); padding-left:8px; margin-bottom:6px; max-height:100px; overflow:hidden; }
+.msg .tool-call { background:var(--surface2); border-radius:6px; padding:6px 8px; margin:4px 0; font-size:12px; font-family:monospace; }
+.msg .tool-call .tc-name { color:var(--accent); font-weight:600; }
+.streaming-indicator { display:inline-block; width:6px; height:14px; background:var(--accent); animation:blink 0.8s infinite; vertical-align:middle; margin-left:2px; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+/* ── Input bar ── */
+.input-bar { display:flex; gap:8px; padding:8px 12px; padding-bottom:calc(8px + var(--safe-bottom)); background:var(--surface); border-top:1px solid var(--border); flex-shrink:0; align-items:flex-end; }
+.input-bar textarea { flex:1; resize:none; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface2); color:var(--text); padding:10px 12px; font-size:15px; font-family:inherit; max-height:120px; min-height:42px; outline:none; line-height:1.4; }
+.input-bar textarea:focus { border-color:var(--accent); }
+.input-bar button { width:42px; height:42px; border-radius:50%; border:none; font-size:18px; cursor:pointer; flex-shrink:0; display:flex; align-items:center; justify-content:center; }
+.input-bar .send-btn { background:var(--accent); color:#000; }
+.input-bar .abort-btn { background:var(--danger); color:#fff; }
+.input-bar button:disabled { opacity:0.4; cursor:default; }
+
+/* ── Model bar ── */
+.model-bar { display:flex; align-items:center; gap:8px; padding:6px 12px; background:var(--surface); border-top:1px solid var(--border); flex-shrink:0; font-size:12px; color:var(--text2); }
+.model-bar select { flex:1; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:6px 8px; font-size:13px; outline:none; }
+.model-bar .ctx { white-space:nowrap; }
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width:4px; }
+::-webkit-scrollbar-track { background:transparent; }
+::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
+</style>
+</head>
+<body>
+
+<div class="header" id="header">
+  <button class="back" id="backBtn" style="display:none" onclick="goBack()">←</button>
+  <span class="title" id="headerTitle">Pi Web</span>
+  <span class="status" id="headerStatus"></span>
+</div>
+
+<div class="content" id="content"></div>
+
+<div id="inputArea" style="display:none">
+  <div class="model-bar" id="modelBar">
+    <select id="modelSelect" onchange="onModelChange()"></select>
+    <span class="ctx" id="ctxInfo"></span>
+  </div>
+  <div class="input-bar">
+    <textarea id="msgInput" rows="1" placeholder="输入消息…" oninput="autoResize(this)" onkeydown="onInputKey(event)"></textarea>
+    <button class="send-btn" id="sendBtn" onclick="sendMessage()">↑</button>
+    <button class="abort-btn" id="abortBtn" onclick="abortSession()" style="display:none">■</button>
+  </div>
+</div>
+
+<script>
+// ─── State ───────────────────────────────────────────────────────────
+const API = "/mobile/api/v1";
+let currentView = "login"; // login | projects | sessions | chat
+let viewStack = [];
+let currentProjectId = null;
+let currentSessionId = null;
+let currentMessages = [];
+let sseSource = null;
+let isRunning = false;
+let streamingMsg = null;
+
+// ─── API helpers ─────────────────────────────────────────────────────
+async function api(path, opts = {}) {
+  const res = await fetch(`${API}${path}`, {
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", ...opts.headers },
+    ...opts,
+  });
+  if (res.status === 401) { showLogin(); throw new Error("UNAUTHORIZED"); }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error?.message || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+// ─── Navigation ──────────────────────────────────────────────────────
+function navigate(view, data) {
+  viewStack.push({ view: currentView, data: getViewData() });
+  currentView = view;
+  renderView(data);
+}
+
+function goBack() {
+  closeSSE();
+  if (viewStack.length === 0) return;
+  const prev = viewStack.pop();
+  currentView = prev.view;
+  renderView(prev.data);
+}
+
+function getViewData() {
+  if (currentView === "sessions") return { projectId: currentProjectId };
+  if (currentView === "chat") return { sessionId: currentSessionId };
+  return null;
+}
+
+function renderView(data) {
+  const backBtn = document.getElementById("backBtn");
+  const inputArea = document.getElementById("inputArea");
+  backBtn.style.display = viewStack.length > 0 ? "" : "none";
+  inputArea.style.display = currentView === "chat" ? "" : "none";
+
+  switch (currentView) {
+    case "login": showLogin(); break;
+    case "projects": showProjects(); break;
+    case "sessions": showSessions(data?.projectId); break;
+    case "chat": showChat(data?.sessionId); break;
+  }
+}
+
+// ─── Login ───────────────────────────────────────────────────────────
+function showLogin() {
+  closeSSE();
+  currentView = "login";
+  viewStack = [];
+  document.getElementById("headerTitle").textContent = "Pi Web Mobile";
+  document.getElementById("headerStatus").className = "status";
+  document.getElementById("backBtn").style.display = "none";
+  document.getElementById("inputArea").style.display = "none";
+  document.getElementById("content").innerHTML = `
+    <div class="login-wrap">
+      <h1>🔗 配对连接</h1>
+      <p>在电脑端托盘菜单查看配对码</p>
+      <input type="text" id="codeInput" maxlength="6" inputmode="numeric" pattern="[0-9]*" placeholder="000000" autocomplete="off">
+      <div class="error" id="loginError"></div>
+      <button onclick="doLogin()">连接</button>
+    </div>`;
+  setTimeout(() => document.getElementById("codeInput")?.focus(), 100);
+}
+
+async function doLogin() {
+  const code = document.getElementById("codeInput")?.value?.trim();
+  const errEl = document.getElementById("loginError");
+  if (!code || code.length !== 6) { errEl.textContent = "请输入6位配对码"; return; }
+  errEl.textContent = "";
+  try {
+    const res = await fetch("/mobile/auth/login", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      errEl.textContent = err.error?.message || "配对失败";
+      return;
+    }
+    currentView = "projects";
+    viewStack = [];
+    renderView();
+  } catch (e) {
+    errEl.textContent = e.message;
+  }
+}
+
+// ─── Projects ────────────────────────────────────────────────────────
+async function showProjects() {
+  currentView = "projects";
+  document.getElementById("headerTitle").textContent = "项目";
+  setStatus("loading");
+  const content = document.getElementById("content");
+  try {
+    const data = await api("/projects");
+    setStatus("ok");
+    if (!data.projects?.length) {
+      content.innerHTML = `<div class="empty">暂无项目</div>`;
+      return;
+    }
+    // Build items via DOM so API data never lands in an inline event handler
+    // (P1-1: paths with quotes/spaces/& previously broke the onclick attribute).
+    const list = document.createElement("div");
+    list.className = "list";
+    for (const p of data.projects) {
+      const item = document.createElement("div");
+      item.className = "list-item";
+      item.dataset.projectId = p.projectId;
+      item.innerHTML =
+        `<div class="name">${p.hasRunning ? '<span class="dot"></span>' : ''}${esc(p.name)}</div>` +
+        `<div class="meta"><span>${p.sessionCount} 会话</span><span>${timeAgo(p.lastModified)}</span></div>`;
+      item.addEventListener("click", () => navigate("sessions", { projectId: item.dataset.projectId }));
+      list.appendChild(item);
+    }
+    content.innerHTML = "";
+    content.appendChild(list);
+  } catch (e) {
+    if (e.message === "UNAUTHORIZED") return;
+    setStatus("err");
+    content.innerHTML = `<div class="empty">加载失败: ${esc(e.message)}</div>`;
+  }
+}
+
+// ─── Sessions ────────────────────────────────────────────────────────
+async function showSessions(projectId) {
+  currentView = "sessions";
+  currentProjectId = projectId;
+  document.getElementById("headerTitle").textContent = projectId ? projectId.split(/[/\\]/).pop() : "会话";
+  setStatus("loading");
+  const content = document.getElementById("content");
+  try {
+    const data = await api(`/projects/${encodeURIComponent(projectId)}/sessions`);
+    setStatus("ok");
+    if (!data.sessions?.length) {
+      content.innerHTML = `<div class="empty">暂无会话</div>`;
+      return;
+    }
+    const list = document.createElement("div");
+    list.className = "list";
+    for (const s of data.sessions) {
+      const item = document.createElement("div");
+      item.className = "list-item";
+      item.dataset.sessionId = s.sessionId;
+      item.innerHTML =
+        `<div class="name">${s.running ? '<span class="dot"></span>' : ''}${esc(s.name || s.sessionId.slice(0, 12))}</div>` +
+        `<div class="meta"><span>${s.messageCount} 条消息</span><span>${timeAgo(s.modified)}</span></div>` +
+        (s.preview ? `<div class="preview">${esc(s.preview)}</div>` : "");
+      item.addEventListener("click", () => navigate("chat", { sessionId: item.dataset.sessionId }));
+      list.appendChild(item);
+    }
+    content.innerHTML = "";
+    content.appendChild(list);
+  } catch (e) {
+    if (e.message === "UNAUTHORIZED") return;
+    setStatus("err");
+    content.innerHTML = `<div class="empty">加载失败: ${esc(e.message)}</div>`;
+  }
+}
+
+// ─── Chat ────────────────────────────────────────────────────────────
+async function showChat(sessionId) {
+  currentView = "chat";
+  currentSessionId = sessionId;
+  currentMessages = [];
+  streamingMsg = null;
+  document.getElementById("headerTitle").textContent = sessionId?.slice(0, 12) ?? "会话";
+  document.getElementById("inputArea").style.display = "";
+  setStatus("loading");
+
+  const content = document.getElementById("content");
+  content.innerHTML = `<div class="chat-messages" id="chatMessages"></div>`;
+
+  // Load history
+  try {
+    const hist = await api(`/sessions/${encodeURIComponent(sessionId)}/history`);
+    currentMessages = hist.messages ?? [];
+    renderMessages();
+  } catch (e) {
+    if (e.message === "UNAUTHORIZED") return;
+    content.innerHTML = `<div class="empty">加载历史失败: ${esc(e.message)}</div>`;
+    return;
+  }
+
+  // Load state + models
+  try {
+    const [state, models] = await Promise.all([
+      api(`/sessions/${encodeURIComponent(sessionId)}/state`),
+      api(`/sessions/${encodeURIComponent(sessionId)}/models`),
+    ]);
+    isRunning = state.running;
+    updateRunningUI();
+    updateContextInfo(state);
+    populateModelSelect(models, state);
+  } catch (e) {
+    if (e.message === "UNAUTHORIZED") return;
+  }
+
+  // Connect SSE
+  connectSSE(sessionId);
+  setStatus("ok");
+  scrollToBottom();
+}
+
+function renderMessages() {
+  const container = document.getElementById("chatMessages");
+  if (!container) return;
+  container.innerHTML = currentMessages.map((m, i) => renderMessage(m, i)).join("");
+}
+
+function renderMessage(msg, idx) {
+  const role = msg.role;
+  if (role === "user") {
+    const text = extractText(msg.content);
+    return `<div class="msg user">${esc(text)}</div>`;
+  }
+  if (role === "assistant") {
+    let html = "";
+    for (const block of (msg.content ?? [])) {
+      if (block.type === "thinking" && block.text) {
+        html += `<div class="thinking">${esc(block.text.slice(0, 500))}${block.text.length > 500 ? "…" : ""}</div>`;
+      } else if (block.type === "text" && block.text) {
+        html += esc(block.text);
+      } else if (block.type === "toolCall") {
+        html += `<div class="tool-call"><span class="tc-name">${esc(block.name)}</span> ${esc(JSON.stringify(block.input).slice(0, 200))}</div>`;
+      }
+    }
+    return `<div class="msg assistant">${html || "<em>(empty)</em>"}</div>`;
+  }
+  if (role === "toolResult") {
+    const text = extractText(msg.content);
+    return `<div class="msg tool">${esc(text.slice(0, 1000))}${text.length > 1000 ? "\n…" : ""}</div>`;
+  }
+  return `<div class="msg system">${esc(extractText(msg.content).slice(0, 200))}</div>`;
+}
+
+function extractText(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.filter(b => b.type === "text").map(b => b.text).join("\n");
+}
+
+function appendStreamingMessage(msg) {
+  streamingMsg = msg;
+  const container = document.getElementById("chatMessages");
+  if (!container) return;
+  // Remove existing streaming element
+  const existing = container.querySelector(".streaming");
+  if (existing) existing.remove();
+  const div = document.createElement("div");
+  div.className = "msg assistant streaming";
+  let html = "";
+  for (const block of (msg.content ?? [])) {
+    if (block.type === "thinking" && block.text) {
+      html += `<div class="thinking">${esc(block.text.slice(0, 300))}</div>`;
+    } else if (block.type === "text" && block.text) {
+      html += esc(block.text);
+    } else if (block.type === "toolCall") {
+      html += `<div class="tool-call"><span class="tc-name">${esc(block.name)}</span> …</div>`;
+    }
+  }
+  html += '<span class="streaming-indicator"></span>';
+  div.innerHTML = html;
+  container.appendChild(div);
+  scrollToBottom();
+}
+
+function removeStreamingMessage() {
+  const container = document.getElementById("chatMessages");
+  if (!container) return;
+  const el = container.querySelector(".streaming");
+  if (el) el.remove();
+  streamingMsg = null;
+}
+
+// ─── SSE ────────────────────────────────────────────────────────────
+function connectSSE(sessionId) {
+  closeSSE();
+  sseSource = new EventSource(`/mobile/api/v1/sessions/${encodeURIComponent(sessionId)}/events`, {
+    withCredentials: true,
+  });
+
+  sseSource.onmessage = (e) => {
+    try {
+      const event = JSON.parse(e.data);
+      handleSSEEvent(event);
+    } catch { /* ignore parse errors */ }
+  };
+
+  sseSource.onerror = () => {
+    setStatus("err");
+    // Auto-reconnect handled by EventSource
+  };
+
+  sseSource.addEventListener("connected", () => setStatus("ok"));
+}
+
+function closeSSE() {
+  if (sseSource) {
+    sseSource.close();
+    sseSource = null;
+  }
+}
+
+function handleSSEEvent(event) {
+  switch (event.type) {
+    case "connected":
+      setStatus("ok");
+      break;
+    case "agent_start":
+      isRunning = true;
+      updateRunningUI();
+      break;
+    case "message_update":
+      // Full replacement of streaming message
+      if (event.message) appendStreamingMessage(event.message);
+      break;
+    case "agent_end":
+      isRunning = false;
+      updateRunningUI();
+      removeStreamingMessage();
+      // Refresh history to get final messages
+      refreshHistory();
+      // Refresh state for context usage
+      refreshState();
+      break;
+    case "model_select":
+      refreshState();
+      break;
+    case "thinking_level_select":
+      refreshState();
+      break;
+    case "stream_end":
+      setStatus("err");
+      break;
+    case "error":
+      console.error("[SSE]", event.message);
+      break;
+  }
+}
+
+async function refreshHistory() {
+  if (!currentSessionId) return;
+  try {
+    const hist = await api(`/sessions/${encodeURIComponent(currentSessionId)}/history`);
+    currentMessages = hist.messages ?? [];
+    renderMessages();
+    scrollToBottom();
+  } catch { /* ignore */ }
+}
+
+async function refreshState() {
+  if (!currentSessionId) return;
+  try {
+    const state = await api(`/sessions/${encodeURIComponent(currentSessionId)}/state`);
+    isRunning = state.running;
+    updateRunningUI();
+    updateContextInfo(state);
+  } catch { /* ignore */ }
+}
+
+// ─── Send / Abort ────────────────────────────────────────────────────
+async function sendMessage() {
+  const input = document.getElementById("msgInput");
+  const text = input?.value?.trim();
+  if (!text || !currentSessionId) return;
+  input.value = "";
+  autoResize(input);
+  try {
+    await api(`/sessions/${encodeURIComponent(currentSessionId)}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ message: text }),
+    });
+  } catch (e) {
+    alert("发送失败: " + e.message);
+  }
+}
+
+async function abortSession() {
+  if (!currentSessionId) return;
+  try {
+    await api(`/sessions/${encodeURIComponent(currentSessionId)}/abort`, { method: "POST", body: "{}" });
+  } catch (e) {
+    console.error("abort failed:", e);
+  }
+}
+
+function onInputKey(e) {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+}
+
+function autoResize(el) {
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight, 120) + "px";
+}
+
+// ─── Model selector ──────────────────────────────────────────────────
+function populateModelSelect(modelsData, state) {
+  const sel = document.getElementById("modelSelect");
+  if (!sel) return;
+  const currentModel = state?.state?.model ?? state?.model;
+  // Build options via DOM: assigning .value/.textContent is not HTML parsing,
+  // so provider/id containing quotes or angle brackets can't break out (P1-1).
+  sel.innerHTML = "";
+  for (const m of (modelsData.models ?? [])) {
+    const opt = document.createElement("option");
+    opt.value = `${m.provider}:${m.id}`;
+    opt.textContent = m.name || m.id;
+    if (currentModel && m.provider === currentModel.provider && m.id === currentModel.id) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+async function onModelChange() {
+  const sel = document.getElementById("modelSelect");
+  if (!sel || !currentSessionId) return;
+  const [provider, modelId] = sel.value.split(":");
+  if (!provider || !modelId) return;
+  try {
+    await api(`/sessions/${encodeURIComponent(currentSessionId)}/model`, {
+      method: "POST",
+      body: JSON.stringify({ provider, modelId }),
+    });
+  } catch (e) {
+    console.error("model switch failed:", e);
+  }
+}
+
+// ─── UI helpers ──────────────────────────────────────────────────────
+function updateRunningUI() {
+  const sendBtn = document.getElementById("sendBtn");
+  const abortBtn = document.getElementById("abortBtn");
+  if (sendBtn) sendBtn.style.display = isRunning ? "none" : "";
+  if (abortBtn) abortBtn.style.display = isRunning ? "" : "none";
+}
+
+function updateContextInfo(state) {
+  const el = document.getElementById("ctxInfo");
+  if (!el) return;
+  const cu = state?.state?.contextUsage ?? state?.contextUsage;
+  if (cu && cu.percent != null) {
+    el.textContent = `${Math.round(cu.percent)}%`;
+  } else {
+    el.textContent = "";
+  }
+}
+
+function setStatus(s) {
+  const el = document.getElementById("headerStatus");
+  if (el) el.className = `status ${s}`;
+}
+
+function scrollToBottom() {
+  const content = document.getElementById("content");
+  if (content) requestAnimationFrame(() => content.scrollTop = content.scrollHeight);
+}
+
+function esc(s) {
+  if (!s) return "";
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+function timeAgo(iso) {
+  if (!iso) return "";
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "刚刚";
+  if (mins < 60) return `${mins}分钟前`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}小时前`;
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return `${days}天前`;
+  return new Date(iso).toLocaleDateString("zh-CN");
+}
+
+// ─── Init ────────────────────────────────────────────────────────────
+(async function init() {
+  // Register service worker
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/mobile/sw.js").catch(() => {});
+  }
+  // Check if already authenticated
+  try {
+    await api("/projects");
+    currentView = "projects";
+    renderView();
+  } catch {
+    showLogin();
+  }
+})();
+</script>
+</body>
+</html>

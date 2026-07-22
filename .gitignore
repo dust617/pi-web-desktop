@@ -18,3 +18,14 @@ nul
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Mobile runtime state / secrets (never commit)
+bff-pairing-code.txt
+*-status.json
+.ns-watchdog.lock/
+
+# Build / package artifacts (large; produced by `npm run dist`)
+release/
+
+# Downloaded deploy-time binaries (fetch separately, not vendored)
+resources/cloudflared/

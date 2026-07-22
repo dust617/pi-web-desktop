@@ -1,0 +1,25 @@
+{
+  "sessions": [
+    {
+      "path": "C:\\Users\\example\\.pi\\agent\\sessions\\--D--project--\\2026-01-01T00-00-00-000Z_00000000-0000-0000-0000-000000000001.jsonl",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "cwd": "D:\\project",
+      "created": "2026-01-01T00:00:00.000Z",
+      "modified": "2026-01-01T01:00:00.000Z",
+      "messageCount": 42,
+      "firstMessage": "Hello, help me with my code",
+      "projectRoot": "D:\\project"
+    },
+    {
+      "path": "C:\\Users\\example\\.pi\\agent\\sessions\\--D--other--\\2026-01-02T00-00-00-000Z_00000000-0000-0000-0000-000000000002.jsonl",
+      "id": "00000000-0000-0000-0000-000000000002",
+      "cwd": "D:\\other",
+      "created": "2026-01-02T00:00:00.000Z",
+      "modified": "2026-01-02T02:00:00.000Z",
+      "messageCount": 7,
+      "firstMessage": "Fix the bug in main.py",
+      "projectRoot": "D:\\other"
+    }
+  ],
+  "runningSessionIds": ["00000000-0000-0000-0000-000000000001"]
+}
