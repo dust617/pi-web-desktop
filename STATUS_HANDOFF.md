@@ -187,3 +187,38 @@ HTTPS(mobile.tt56677.top/mobile/): 000  ← 由上一行决定, 预期
 打包产物:  release/Pi-Web-Desktop-0.1.0-x64.exe (291M)
            release/Pi-Web-Desktop-0.1.0-portable.exe (290M)
 ```
+
+---
+
+## 2026-07-22 更新：审计修复完成 + 公网全链路打通
+
+### 审计修复（MOBILE_AUDIT_REPORT.md，已全部修复并测试）
+- **P0-1** 删除未鉴权的 `GET /mobile/auth/pairing-code`（tunnel 会把公网请求转到 loopback）。配对码只能 Electron 托盘进程内读取。**公网验证：404 ✓**
+- **P0-2** 统一 Origin 配置来源 `resolveAllowedOrigins()`（Electron 与 standalone 共用）；**缺失 Origin 的 mutation 也返回 403**（纵深防御）。默认内置 `https://mobile.tt56677.top`，设 `PI_MOBILE_ORIGIN=`（空）= 仅本机模式。**公网验证：缺失/恶意 Origin → 403 ✓**
+- **P1-1** PWA 的项目/会话/模型列表改为 DOM 构建（`dataset` + `addEventListener`），消除 API 数据拼接的 inline onclick（路径含引号/空格/& 不再破坏页面）。静态按钮（doLogin/send/abort/back）保留，无注入面。
+- **P1-2** 超限请求体返回结构化 **413**（不再 socket RST）；`finally` 用 `req.resume()` 排空未读 body（keep-alive 干净复用，不 reset 响应）。
+- **P1-3** `ns-watchdog.sh` v4：mkdir 单实例锁 + NS 超时失败分支 + route 幂等。
+- **P1-4** `.gitignore` 排除 `bff-pairing-code.txt`、`*-status.json`、`release/`、`resources/cloudflared/`。已本地提交 `a991804`（未 push）。
+- **P2-1** Set-Cookie 在 `X-Forwarded-Proto=https` 时自动加 `Secure`（本地 HTTP 不加，公网 HTTPS 加）。**公网验证：cookie 含 Secure ✓**
+- **P2-2** 托盘"刷新配对码"真正轮换码并吊销所有手机会话（`rotateCode()`）。
+- **P2-3** standalone BFF 加 DEV 横幅 + EADDRINUSE 指引。
+- **P2-4** 新增自包含回归测试 `mobile/tests/bff.test.mjs`（24 项全过：`node mobile/tests/bff.test.mjs`）。
+
+### 公网全链路打通（里程碑）
+- **NS 传播已生效**（watchdog attempt 62 检测到 Cloudflare NS）。
+- `https://mobile.tt56677.top/mobile/` 公网返回 **200**，鉴权/Origin/Secure cookie/敏感字段过滤全部公网验证通过。
+- 当前配对码见 `bff-pairing-code.txt`（每次 BFF 重启会变）。
+
+### ⚠️ 关键运行约束：依赖代理 TUN
+- 本机直连 Cloudflare 边缘的 **TLS 被干扰**（`SEC_E_ILLEGAL_MESSAGE`），且 DNS 被 Clash/mihomo fake-ip 接管（`198.18.0.0/15`）。
+- cloudflared 2026.7.2 **不走 HTTP 代理**（`--proxy-url` 已移除、`HTTPS_PROXY` 不生效）。
+- 因此 cloudflared **必须经 mihomo TUN 模式**接管流量才能连上 Cloudflare 边缘。
+- 已在 `config.yml` 固定 `protocol: http2`（TCP，避开 QUIC/UDP 被代理丢弃），与 TUN 兼容性最好。
+- **TUN 开 → cloudflared 自动连通；TUN 关 → 安全重连等待**（cloudflared 自带重连，互不冲突）。
+- 代理时开时关时，移动端公网可用性随 TUN 状态变化，这是环境限制，非配置错误。
+
+### 手机真机测试指引
+1. 确保本机代理 **TUN 已开启**（cloudflared 才能连边缘）。
+2. 手机浏览器打开 `https://mobile.tt56677.top/mobile/`。
+3. 输入 `bff-pairing-code.txt` 里的当前配对码。
+4. 验证：项目列表 → 会话列表 → 历史 → SSE 流式 → 发送 → 中止 → 切模型 → 上下文用量 → 添加到主屏幕（PWA）。

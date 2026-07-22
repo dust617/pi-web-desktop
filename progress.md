@@ -94,3 +94,10 @@
 - 确认工程问题：宣称的 40/40 脚本不在仓库；多套重复 watchdog/setup 正运行；移动端实现尚未提交。
 - 本次仅检查和更新连续性文档，未停止现有 pi-web/BFF/cloudflared/watchdog，未发送 prompt、切模型或中止会话。
 - 已整理可直接转发给后续开发者/修复 Agent 的自包含报告：`MOBILE_AUDIT_REPORT.md`，包含进度、证据、问题分级、修复建议、测试矩阵和验收标准。
+
+## 2026-07-22 审计修复 + 公网打通
+- 修复 MOBILE_AUDIT_REPORT.md 全部 P0/P1/P2（详见 STATUS_HANDOFF.md）。
+- 回归测试 mobile/tests/bff.test.mjs：24/24 通过。
+- NS 传播生效，公网 https://mobile.tt56677.top/mobile/ 返回 200，安全修复公网验证通过。
+- cloudflared 固定 http2 协议；公网访问依赖代理 TUN 开启（本机直连 Cloudflare TLS 被干扰）。
+- 本地提交 a991804（未 push）。
