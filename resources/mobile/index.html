@@ -853,9 +853,37 @@ function setupTapOutside() {
 
 // ─── Init ────────────────────────────────────────────────────────────
 (async function init() {
-  // Register service worker
+  // Register service worker with automatic, no-cache-clear updates.
+  // PWA_VERSION must match VERSION in sw.js; bump BOTH on every deploy.
+  // When a newly-activated SW announces a different version, the page reloads
+  // itself once — so users get updates without ever clearing cache.
+  const PWA_VERSION = "pi-mobile-v3";
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("/mobile/sw.js").catch(() => {});
+    navigator.serviceWorker.register("/mobile/sw.js").then((reg) => {
+      navigator.serviceWorker.addEventListener("message", (e) => {
+        const d = e.data;
+        if (d && d.type === "sw-version" && d.version && d.version !== PWA_VERSION) {
+          // Guard against reload loops (e.g. stale HTML + fresh SW mismatch).
+          const now = Date.now();
+          const last = Number(sessionStorage.getItem("sw-reload-at") || "0");
+          if (now - last < 15000) return;
+          sessionStorage.setItem("sw-reload-at", String(now));
+          window.location.reload();
+        }
+      });
+      // Ask the active SW for its version (covers the case where it activated
+      // before this page attached its listener).
+      if (navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage("get-version");
+      }
+      // Check for updates when the app becomes visible and every few minutes,
+      // instead of waiting for the browser's 24h default SW update check.
+      const checkUpdate = () => reg.update().catch(() => {});
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") checkUpdate();
+      });
+      setInterval(checkUpdate, 5 * 60 * 1000);
+    }).catch(() => {});
   }
   setupViewportHandling();
   setupTapOutside();

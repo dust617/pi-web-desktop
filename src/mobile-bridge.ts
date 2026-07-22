@@ -1076,9 +1076,15 @@ export class MobileBridge {
     };
     const mime = mimeMap[ext] ?? "application/octet-stream";
 
-    // HTML and the service worker must stay fresh so UI fixes propagate on
-    // refresh; other assets can be cached for an hour.
-    const cacheControl = (ext === ".html" || relPath.endsWith("sw.js")) ? "no-cache" : "public, max-age=3600";
+    // The app shell (HTML, service worker, manifest) must NEVER be cached by
+    // the browser or by Cloudflare, otherwise updates would require the user to
+    // clear cache. `no-store` is the strongest signal: Cloudflare passes it
+    // through and does not store the resource, and the SW self-update flow in
+    // index.html/sw.js then applies new versions automatically. Other assets
+    // (icons) can be cached for an hour.
+    const isShell = ext === ".html" || ext === ".webmanifest" ||
+      relPath.endsWith("sw.js") || relPath.endsWith("manifest.json");
+    const cacheControl = isShell ? "no-store, no-cache, must-revalidate" : "public, max-age=3600";
     this.sendFile(res, filePath, mime, cacheControl);
   }
 
