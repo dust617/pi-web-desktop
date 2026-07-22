@@ -1,6 +1,9 @@
 // MobileBridge BFF regression tests (self-contained, repeatable).
 //   node mobile/tests/bff.test.mjs
+import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { MobileBridge } = require("../../dist/mobile-bridge.js");
@@ -94,8 +97,10 @@ function sseConnected(port, cookie) {
 async function main() {
   await new Promise((r) => mock.listen(0, "127.0.0.1", r));
   const mockPort = mock.address().port;
+  const storePath = path.join(os.tmpdir(), `pi-mobile-bff-test-${process.pid}.json`);
+  try { fs.unlinkSync(storePath); } catch {}
   const fakeRuntime = { get info() { return { port: mockPort, url: `http://127.0.0.1:${mockPort}`, pid: -1 }; }, get isRunning() { return true; } };
-  const bridge = new MobileBridge({ runtime: fakeRuntime, port: BFF_PORT, allowedOrigins: [ORIGIN_OK] });
+  const bridge = new MobileBridge({ runtime: fakeRuntime, port: BFF_PORT, allowedOrigins: [ORIGIN_OK], sessionStorePath: storePath });
   await bridge.start();
   const code = bridge.pairingCode;
   const P = BFF_PORT;
@@ -121,6 +126,7 @@ async function main() {
   const cookie = jar(r.headers["set-cookie"]);
 
   r = await req(P, "POST", "/mobile/auth/login", { headers: { "x-forwarded-proto": "https" }, body: { code } });
+  const persistedCookie = jar(r.headers["set-cookie"]);
   check("T5 cookie Secure when x-forwarded-proto=https (P2-1)", /Secure/i.test(rawCookie(r.headers["set-cookie"])), rawCookie(r.headers["set-cookie"]));
 
   let saw429 = false;
@@ -190,9 +196,20 @@ async function main() {
   r = await req(P, "GET", "/mobile/api/v1/projects", { headers: { Cookie: cookie } });
   check("T18 after logout -> 401", r.status === 401);
 
+  await bridge.stop();
+  const storeText = fs.readFileSync(storePath, "utf8");
+  check("T19 session store never persists raw bearer token", !storeText.includes(persistedCookie.split("=")[1]) && storeText.includes("tokenHash"));
+  const restartPort = BFF_PORT + 1;
+  const bridge2 = new MobileBridge({ runtime: fakeRuntime, port: restartPort, allowedOrigins: [ORIGIN_OK], sessionStorePath: storePath });
+  await bridge2.start();
+  r = await req(restartPort, "GET", "/mobile/api/v1/projects", { headers: { Cookie: persistedCookie } });
+  check("T19 hashed session store survives BFF restart", r.status === 200, "got " + r.status);
+  await bridge2.stop();
+  try { fs.unlinkSync(storePath); } catch {}
+
   console.log("\n" + pass + " passed, " + fail + " failed");
   if (failures.length) console.log("failures: " + failures.join(", "));
-  await bridge.stop(); mock.close();
+  mock.close();
   process.exit(fail ? 1 : 0);
 }
 main().catch((e) => { console.error(e); process.exit(1); });

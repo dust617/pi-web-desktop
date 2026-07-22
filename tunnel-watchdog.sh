@@ -1,28 +1,38 @@
 #!/usr/bin/env bash
-# tunnel-watchdog.sh — keep the Cloudflare tunnel alive across network drops.
+# tunnel-watchdog.sh — supervise the complete mobile path without killing
+# unrelated cloudflared connectors.
 #
-# cloudflared already retries on its own, but its reconnect backoff grows to
-# ~1 minute. This watchdog detects a dead tunnel (no public HTTPS) and restarts
-# cloudflared to reset the backoff, so the tunnel recovers as soon as the
-# network/proxy is back. It is single-instance and logs every action.
+# Recovery layers:
+#   1. local pi-web (62809) must be healthy; this script never restarts Electron.
+#   2. local MobileBridge (62810) is restarted only when it is the DEV-only
+#      standalone-bff.mjs process (or when the port is free).
+#   3. cloudflared is restarted only after repeated public API-health failures,
+#      and only processes whose command line is `tunnel run pi-mobile` are killed.
 #
-# Boundary: this can only recover from transient network/proxy drops. If the
-# proxy node itself blocks argotunnel.com, restarting won't help until a
-# different node is chosen.
+# Boundary: direct Cloudflare edge TLS is interfered with on this host. If the
+# proxy/router path blocks argotunnel.com, restart cannot restore service until
+# a working proxy route/node is available.
 set -u
 
 ROOT="D:/PI-web-desktop"
 CLOUDFLARED="$ROOT/resources/cloudflared/cloudflared.exe"
 TUNNEL_NAME="pi-mobile"
-PUBLIC_URL="https://mobile.tt56677.top/mobile/"
+PUBLIC_HEALTH="https://mobile.tt56677.top/mobile/api/v1/health"
+LOCAL_BFF_HEALTH="http://127.0.0.1:62810/mobile/api/v1/health"
+PIWEB_HEALTH="http://127.0.0.1:62809/api/home"
 LOG="$ROOT/tunnel-watchdog.log"
 STATUS="$ROOT/tunnel-watchdog-status.json"
 LOCKDIR="$ROOT/.tunnel-watchdog.lock"
-CHECK_INTERVAL=180     # seconds between health checks (~3 min; less churn than 30s)
-FAIL_THRESHOLD=3       # consecutive failures before a restart (~9 min of downtime)
-RESTART_COOLDOWN=120   # min seconds between restarts
+TUNNEL_PID_FILE="$ROOT/.pi-mobile-cloudflared.pid"
+BFF_PID_FILE="$ROOT/.standalone-bff.pid"
+CHECK_INTERVAL=180     # check every ~3 minutes (user preference)
+FAIL_THRESHOLD=2       # restart tunnel after ~6 minutes; ignore one transient failure
+RESTART_COOLDOWN=120   # minimum seconds between tunnel restarts
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
+write_status() {
+  printf '{"status":"%s","detail":"%s","time":"%s"}\n' "$1" "$2" "$(date '+%Y-%m-%dT%H:%M:%S%z')" > "$STATUS"
+}
 
 # ── single-instance lock ──────────────────────────────────────────────
 if mkdir "$LOCKDIR" 2>/dev/null; then
@@ -37,43 +47,97 @@ else
 fi
 trap 'rm -rf "$LOCKDIR"' EXIT
 
-write_status() { # $1=status $2=detail
-  printf '{"status":"%s","detail":"%s","time":"%s"}\n' "$1" "$2" "$(date '+%Y-%m-%dT%H:%M:%S%z')" > "$STATUS"
+json_health_ok() {
+  curl -fsS --max-time 12 "$1" 2>/dev/null | grep -Eq '"ok"[[:space:]]*:[[:space:]]*true'
+}
+local_bff_ok() { json_health_ok "$LOCAL_BFF_HEALTH"; }
+public_ok() { json_health_ok "$PUBLIC_HEALTH"; }
+piweb_ok() { curl -fsS --max-time 8 "$PIWEB_HEALTH" >/dev/null 2>&1; }
+
+port_pid() {
+  netstat -ano 2>/dev/null | awk -v p=":$1" '$2 ~ p && $4 == "LISTENING" { print $5; exit }'
+}
+process_command_line() {
+  powershell.exe -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \"ProcessId=$1\").CommandLine" 2>/dev/null | tr -d '\r'
+}
+matching_tunnel_pids() {
+  powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { \$_.Name -eq 'cloudflared.exe' -and \$_.CommandLine -match 'tunnel\\s+run\\s+$TUNNEL_NAME(?:\\s|$)' } | ForEach-Object { \$_.ProcessId }" 2>/dev/null | tr -d '\r'
 }
 
-public_ok() {
-  local code
-  code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 12 "$PUBLIC_URL" 2>/dev/null)
-  [ "$code" = "200" ]
+recover_standalone_bff() {
+  if ! piweb_ok; then
+    log "pi-web 62809 is unhealthy; refusing to start/restart BFF (Electron owner action required)"
+    write_status "piweb_down" "local pi-web health failed; Electron not restarted by watchdog"
+    return 1
+  fi
+
+  local pid cmd
+  pid=$(port_pid 62810 || true)
+  if [ -n "$pid" ]; then
+    cmd=$(process_command_line "$pid")
+    if echo "$cmd" | grep -q 'standalone-bff\.mjs'; then
+      log "standalone BFF unhealthy; stopping exact pid $pid"
+      taskkill //F //PID "$pid" >/dev/null 2>&1 || true
+      sleep 2
+    else
+      log "port 62810 is owned by a non-standalone process (pid $pid); refusing collateral kill"
+      write_status "bff_unhealthy" "62810 unhealthy and owned by integrated/unknown process"
+      return 1
+    fi
+  fi
+
+  log "starting DEV-only standalone BFF"
+  (cd "$ROOT" && nohup node standalone-bff.mjs > bff-standalone.log 2>&1 & echo $! > "$BFF_PID_FILE")
+  sleep 3
+  if local_bff_ok; then
+    log "standalone BFF recovered"
+    write_status "bff_recovered" "local BFF restarted and healthy"
+    return 0
+  fi
+  log "standalone BFF restart did not become healthy"
+  write_status "bff_restart_failed" "standalone BFF failed health check"
+  return 1
 }
 
 restart_tunnel() {
-  log "restarting cloudflared to reset reconnect backoff"
-  taskkill //F //IM cloudflared.exe >/dev/null 2>&1
-  sleep 3
+  local pid found=0
+  log "restarting only cloudflared connector(s) matching: tunnel run $TUNNEL_NAME"
+  for pid in $(matching_tunnel_pids); do
+    [ -n "$pid" ] || continue
+    found=1
+    taskkill //F //PID "$pid" >/dev/null 2>&1 || true
+  done
+  [ "$found" -eq 1 ] && sleep 3
+
   nohup "$CLOUDFLARED" tunnel run "$TUNNEL_NAME" > "$ROOT/tunnel-run.log" 2>&1 &
-  log "cloudflared restarted (pid $!)"
+  pid=$!
+  echo "$pid" > "$TUNNEL_PID_FILE"
+  log "pi-mobile cloudflared restarted (pid $pid)"
 }
 
-log "tunnel-watchdog started (interval=${CHECK_INTERVAL}s, threshold=${FAIL_THRESHOLD})"
+log "tunnel-watchdog started (interval=${CHECK_INTERVAL}s, threshold=${FAIL_THRESHOLD}, layered-health=true)"
 FAILS=0
 LAST_RESTART=0
 
 while true; do
-  if public_ok; then
-    if [ "$FAILS" -gt 0 ]; then log "tunnel healthy again after $FAILS failed check(s)"; fi
+  if ! local_bff_ok; then
     FAILS=0
-    write_status "ok" "public https 200"
+    log "local BFF health failed; attempting local-layer recovery before touching tunnel"
+    recover_standalone_bff || true
+  elif public_ok; then
+    if [ "$FAILS" -gt 0 ]; then log "public mobile API healthy again after $FAILS failed check(s)"; fi
+    FAILS=0
+    write_status "ok" "local and public mobile API health true"
   else
     FAILS=$((FAILS + 1))
-    log "public check failed ($FAILS/$FAIL_THRESHOLD)"
-    write_status "degraded" "public not 200, fail $FAILS/$FAIL_THRESHOLD"
+    log "public API health failed ($FAILS/$FAIL_THRESHOLD), local BFF remains healthy"
+    write_status "degraded" "public API unhealthy, local BFF healthy, fail $FAILS/$FAIL_THRESHOLD"
     NOW=$(date +%s)
     if [ "$FAILS" -ge "$FAIL_THRESHOLD" ] && [ $((NOW - LAST_RESTART)) -ge "$RESTART_COOLDOWN" ]; then
       restart_tunnel
       LAST_RESTART=$NOW
       FAILS=0
-      write_status "restarted" "cloudflared restarted after repeated failures"
+      write_status "restarted" "pi-mobile cloudflared restarted after repeated public failures"
     fi
   fi
   sleep "$CHECK_INTERVAL"

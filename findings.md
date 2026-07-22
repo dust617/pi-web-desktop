@@ -77,3 +77,12 @@
 - 旧 release 安装包经 ASAR 检查确认包含 pre-fix pairing-code 漏洞；已从当前 HEAD 重新打包，package parity 6/6，bridge/main/PWA/SW/manifest 与工作树逐字节一致。
 - 剩余基础设施风险：DEV-only standalone 仍把登录状态存在项目根目录明文文件；login 限流在 cloudflared 后共享 loopback bucket；watchdog 仍按进程名全局重启 cloudflared 且不监督 BFF。这些不阻塞当前手机体验，但应在切回集成 Electron 生产路径时加固。
 - SSE 当前会收到 MobileBridge 与上游各一条 connected；PWA 已 100ms debounce 对账，正确但存在低优先级冗余。
+
+## 2026-07-23 移动端稳定性加固
+
+- 手机确认 v5 无清缓存自动生效，输入框完整，“↓ 新消息”出现；证明 PWA 更新、visualViewport 与 smart-scroll 修复已真实落地。
+- 手机→桌面模型切换已通过共享 agent state 确认真实生效；桌面→手机路径由 `model_select` SSE + `refreshState()` + v5 `syncModelSelect()` 对账。桌面 pi-web 客户端 bundle 未检索到可读的专用 `model_select` 字符串，桌面 UI 视觉同步仍需用户真机/桌面联合观察，但底层 agent 模型状态是单一真相源。
+- AuthManager 持久化升级为 v2：文件只存 SHA-256 tokenHash，旧明文 `id` 自动无损迁移；temp+rename 原子写，失败可见日志。真实 `bff-sessions.json` 已迁移 19 条，零 raw id；旧手机 cookie 继续有效。
+- BFF 测试增至 34/34，新增“磁盘不含原始 bearer token”和“哈希 store 跨 BFF 重启仍保持登录”。
+- Tunnel watchdog 改为分层健康检查：本地 pi-web → 本地 BFF → 公网 API；只重启命令行为 `tunnel run pi-mobile` 的 cloudflared，不再全局杀进程；DEV standalone 挂掉可自愈，integrated/unknown owner 不会被误杀；连续两次公网失败（约 6 分钟）才重启。
+- 当前 tunnel 故障属于外部链路：HTTP/2 实际 TLS handshake EOF，QUIC precheck 报 PASS 但真实 dial `no recent network activity`；本地 62809/62810 均健康。固定 http2 已改为 `protocol:auto` 以适应节点/代理变化，但当前节点下两种传输都不可用，代码重启无法根治。

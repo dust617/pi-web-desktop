@@ -266,3 +266,11 @@ HTTPS(mobile.tt56677.top/mobile/): 000  ← 由上一行决定, 预期
 - 当前公网运行仍是 DEV-only standalone，session token 文件位于项目根目录；生产使用应切回集成 Electron 的 per-user userData 存储。
 - cloudflared 后登录限流共享 loopback bucket；watchdog 仍按 image name 重启 cloudflared，且只监督隧道、不监督 BFF。
 - 公网可用性继续依赖路由器/本机代理对 `argotunnel.com` 的可用转发路径。
+
+### 稳定性加固补充
+- Auth store v2 只保存 bearer token 的 SHA-256 hash，并用 temp+rename 原子写；旧 store 自动迁移且旧手机 cookie 不失效。回归包含跨 BFF 重启验证（BFF 34/34）。
+- watchdog 采用分层 health：62809 pi-web → 62810 BFF → 公网 `/mobile/api/v1/health`。standalone BFF 可自愈；integrated/未知进程不会被误杀。
+- cloudflared 仅按命令行匹配 `tunnel run pi-mobile` 精确重启，不再 `taskkill /IM cloudflared.exe`；连续两次失败（约 6 分钟）才重启，忽略单次抖动。
+- `C:/Users/Administrator/.cloudflared/config.yml` 使用 `protocol:auto`。原因：代理节点/路由会变化，旧环境 QUIC 不通而 HTTP/2 可用，当前诊断却是 QUIC precheck PASS、HTTP/2 blocked；固定协议无法兼容两种状态。
+- 当前一次实测中两种实际传输均失败：HTTP/2 TLS EOF、QUIC dial timeout。此时本地服务仍全绿，只有更换/恢复可用代理节点或路由规则才能恢复公网；watchdog 不制造重启风暴。
+- 当前配对码 `605021`（仅新设备需要；现有持久化登录 cookie 仍有效）。

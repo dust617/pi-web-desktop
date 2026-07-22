@@ -65,4 +65,18 @@
 
 ## 当前下一步（移动端）
 
-用户继续真机体验验收 v5；若输入区仍有设备特有偏移，记录手机浏览器/安装模式/键盘状态后针对该设备调整。基础设施加固项见 findings 与 STATUS_HANDOFF。
+用户继续真机体验验收 v5；若输入区仍有设备特有偏移，记录手机浏览器/安装模式/键盘状态后针对该设备调整。
+
+## 移动端稳定性加固（已完成）
+
+1. [x] session store 改为 tokenHash + 原子写，并无损迁移现有登录
+2. [x] 增加 BFF 重启持久化与明文 token 防泄露回归
+3. [x] watchdog 分层检查 pi-web/BFF/public API，并精确管理 pi-mobile connector
+4. [x] standalone BFF 本地故障自愈，integrated/未知进程拒绝误杀
+5. [x] 公网连续两次失败（约 6 分钟）后恢复，忽略单次波动
+6. [x] cloudflared 传输改为 auto 适应不同代理节点
+7. [x] 重建安装版/便携版并通过 package parity
+
+## 当前外部阻塞
+
+当前代理/路由到 Cloudflare tunnel edge 同时出现 HTTP/2 TLS EOF 与 QUIC dial timeout；本地 62809/62810 健康。需代理节点/路由恢复，watchdog 会在链路可用后自动恢复公网。

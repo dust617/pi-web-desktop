@@ -70,7 +70,8 @@ export function resolveAllowedOrigins(env: NodeJS.ProcessEnv = process.env): str
 }
 
 interface AuthSession {
-  id: string;
+  /** SHA-256 of the bearer token; raw cookie tokens are never persisted. */
+  tokenHash: string;
   createdAt: number;
   expiresAt: number;
 }
@@ -173,27 +174,47 @@ class AuthManager {
     this.load();
   }
 
+  private hashToken(token: string): string {
+    return crypto.createHash("sha256").update(token).digest("hex");
+  }
+
   /** Load persisted sessions (survives BFF restart so phones stay logged in). */
   private load(): void {
     if (!this.storePath) return;
     try {
       const data = JSON.parse(fs.readFileSync(this.storePath, "utf8"));
       const now = Date.now();
+      let migratedLegacyTokens = false;
       for (const s of (data.sessions ?? [])) {
-        if (s && s.id && typeof s.expiresAt === "number" && s.expiresAt > now) {
-          this.sessions.set(s.id, { id: s.id, createdAt: s.createdAt ?? now, expiresAt: s.expiresAt });
-        }
+        if (!s || typeof s.expiresAt !== "number" || s.expiresAt <= now) continue;
+        // Legacy stores persisted the raw token as `id`. Hash it in memory and
+        // immediately rewrite the store so existing phone cookies keep working.
+        const tokenHash = typeof s.tokenHash === "string" ? s.tokenHash :
+          (typeof s.id === "string" ? this.hashToken(s.id) : "");
+        if (!tokenHash) continue;
+        if (s.id) migratedLegacyTokens = true;
+        this.sessions.set(tokenHash, { tokenHash, createdAt: s.createdAt ?? now, expiresAt: s.expiresAt });
       }
-    } catch { /* no store yet */ }
+      if (migratedLegacyTokens) this.persist();
+    } catch (err: any) {
+      if (err?.code !== "ENOENT") console.error(`[mobile-bridge] failed to load mobile session store: ${err?.message ?? "unknown error"}`);
+    }
   }
 
-  /** Persist sessions to disk (best effort). */
+  /** Persist only token hashes, using temp+rename so crashes cannot truncate the store. */
   private persist(): void {
     if (!this.storePath) return;
+    const tempPath = `${this.storePath}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
     try {
-      const data = { sessions: [...this.sessions.values()] };
-      fs.writeFileSync(this.storePath, JSON.stringify(data), "utf8");
-    } catch { /* best effort */ }
+      fs.mkdirSync(path.dirname(this.storePath), { recursive: true });
+      const data = { version: 2, sessions: [...this.sessions.values()] };
+      fs.writeFileSync(tempPath, JSON.stringify(data), { encoding: "utf8", mode: 0o600 });
+      fs.renameSync(tempPath, this.storePath);
+      try { fs.chmodSync(this.storePath, 0o600); } catch { /* best effort on Windows */ }
+    } catch (err: any) {
+      try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); } catch { /* ignore */ }
+      console.error(`[mobile-bridge] failed to persist mobile sessions: ${err?.message ?? "unknown error"}`);
+    }
   }
 
   get code(): string {
@@ -221,8 +242,9 @@ class AuthManager {
   login(code: string): string | null {
     if (code !== this.pairingCode) return null;
     const sessionId = crypto.randomUUID();
+    const tokenHash = this.hashToken(sessionId);
     const now = Date.now();
-    this.sessions.set(sessionId, { id: sessionId, createdAt: now, expiresAt: now + AuthManager.TTL_MS });
+    this.sessions.set(tokenHash, { tokenHash, createdAt: now, expiresAt: now + AuthManager.TTL_MS });
     this.persist();
     return sessionId;
   }
@@ -230,10 +252,11 @@ class AuthManager {
   /** Validate session cookie (rejects expired sessions). */
   validate(sessionId: string | undefined): boolean {
     if (!sessionId) return false;
-    const s = this.sessions.get(sessionId);
+    const tokenHash = this.hashToken(sessionId);
+    const s = this.sessions.get(tokenHash);
     if (!s) return false;
     if (s.expiresAt <= Date.now()) {
-      this.sessions.delete(sessionId);
+      this.sessions.delete(tokenHash);
       this.persist();
       return false;
     }
@@ -242,7 +265,7 @@ class AuthManager {
 
   /** Destroy a session. */
   logout(sessionId: string): void {
-    this.sessions.delete(sessionId);
+    this.sessions.delete(this.hashToken(sessionId));
     this.persist();
   }
 

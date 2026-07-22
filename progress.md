@@ -127,3 +127,12 @@
 - standalone BFF 仅在 62810 重启，62809/pi-web 与当前会话未重启；公网 v5、Secure cookie、gpt-5.6-sol state、SSE、404 secret routes、401 malformed cookie 均验证通过。当前配对码 `812464`，既有持久化手机 cookie 仍有效。
 - 重新构建安装版与便携版；ASAR 中 `dist/mobile-bridge.js`、`dist/main.js`、PWA HTML/SW/manifest 与当前工作树逐字节一致，不再包含旧公开配对码/revoke-all 路由。
 - 仍待基础设施加固：DEV-only standalone token 文件、cloudflared 后共享登录限流、watchdog 全局 cloudflared 进程管理/只监督隧道不监督 BFF；不阻塞当前真机体验验收。
+
+## 2026-07-23 移动端稳定性加固
+
+- 用户真机确认：v5 未清缓存自动生效、输入框完整、智能滚动“↓ 新消息”可见；模型手机切换后服务端真实 state 一致。
+- MobileBridge session store 升级为 v2：只持久化 SHA-256 tokenHash，旧 raw-id store 自动迁移；temp+rename 原子写，保留七天登录。真实 store 19 条已迁移，无明文 token。
+- BFF 回归增加哈希/重启持久化两项，现为 34/34；PWA 12/12、SW/layout 4/4、package parity 6/6 保持通过。
+- `tunnel-watchdog.sh` 重写为分层恢复：检查 local pi-web、local BFF、public API；只管理 `pi-mobile` connector；DEV standalone 可自动恢复；失败阈值改为连续两次/约 6 分钟。
+- cloudflared transport 改为 `protocol:auto`：当前 precheck 显示 QUIC PASS/HTTP2 FAIL，但真实 QUIC dial 仍超时、HTTP2 TLS EOF；说明当前代理节点/路由对 tunnel edge 两种传输都不稳定。watchdog 可缩短恢复时间，但无法替代可用代理节点。
+- 最终安装版/便携版再次重建并通过 ASAR parity；当前 pairing code `605021`，已有登录 cookie 继续有效。
