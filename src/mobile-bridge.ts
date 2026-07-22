@@ -805,19 +805,25 @@ export class MobileBridge {
 
       // Filter: remove systemPrompt, sessionFile, queuedMessages, extensionStatuses
       const state = raw.state ?? {};
-      const dto: any = {
-        running: raw.running ?? false,
-      };
-      if (raw.running && state) {
-        dto.isStreaming = state.isStreaming ?? false;
-        dto.isPromptRunning = state.isPromptRunning ?? false;
-        dto.isCompacting = state.isCompacting ?? false;
-        dto.model = state.model ?? null;
-        dto.thinkingLevel = state.thinkingLevel ?? null;
-        dto.contextUsage = state.contextUsage ?? null;
-        dto.messageCount = state.messageCount ?? 0;
+      // pi-web's top-level `running` means "agent process alive" (isAlive), which is
+      // ALWAYS true for a persistent interactive session (e.g. the desktop TUI), even
+      // while idle waiting for input. The phone needs "actively processing", which
+      // mirrors the agent's isRunning(): alive && (promptRunning || streaming || compacting).
+      // Without this, the 5s state poll would permanently report running=true and the
+      // send button would be stuck on the stop icon.
+      const activelyRunning = raw.running === true &&
+        (state.isPromptRunning === true || state.isStreaming === true || state.isCompacting === true);
+      const dto = {
+        running: activelyRunning,
+        isStreaming: state.isStreaming === true,
+        isPromptRunning: state.isPromptRunning === true,
+        isCompacting: state.isCompacting === true,
+        model: state.model ?? null,
+        thinkingLevel: state.thinkingLevel ?? null,
+        contextUsage: state.contextUsage ?? null,
+        messageCount: state.messageCount ?? 0,
         // Explicitly NOT forwarding: systemPrompt, sessionFile, queuedMessages, extensionStatuses
-      }
+      };
 
       jsonResponse(res, 200, dto);
     } catch (err: any) {
@@ -894,7 +900,10 @@ export class MobileBridge {
       try { res.end(); } catch { /* ignore */ }
     }
 
-    req.on("close", cleanup);
+    // NOTE: detect client disconnect via res "close", NOT req "close".
+    // For a body-less GET (SSE), req emits "close" right after headers are read,
+    // which would tear down the long-lived stream immediately. res "close" only
+    // fires when the underlying connection actually closes (client left).
     res.on("close", () => {
       this.activeSSE.delete(res);
       cleanup();
@@ -1067,8 +1076,9 @@ export class MobileBridge {
     };
     const mime = mimeMap[ext] ?? "application/octet-stream";
 
-    // Static shell can be cached; API never cached
-    const cacheControl = ext === ".html" ? "no-cache" : "public, max-age=3600";
+    // HTML and the service worker must stay fresh so UI fixes propagate on
+    // refresh; other assets can be cached for an hour.
+    const cacheControl = (ext === ".html" || relPath.endsWith("sw.js")) ? "no-cache" : "public, max-age=3600";
     this.sendFile(res, filePath, mime, cacheControl);
   }
 

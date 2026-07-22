@@ -24,6 +24,7 @@ bff-pairing-code.txt
 bff-sessions.json
 *-status.json
 .ns-watchdog.lock/
+.tunnel-watchdog.lock/
 
 # Build / package artifacts (large; produced by `npm run dist`)
 release/

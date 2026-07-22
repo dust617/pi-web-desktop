@@ -101,3 +101,18 @@
 - NS 传播生效，公网 https://mobile.tt56677.top/mobile/ 返回 200，安全修复公网验证通过。
 - cloudflared 固定 http2 协议；公网访问依赖代理 TUN 开启（本机直连 Cloudflare TLS 被干扰）。
 - 本地提交 a991804（未 push）。
+
+## 2026-07-23 卡住 session 恢复 + 移动流式修复
+
+- 校验上一 session `019f85e6…` JSONL 完整，读取末尾 compaction 交接并继续未完成任务。
+- `src/mobile-bridge.ts`：state 的 `running` 改为 active-work 语义，同时 idle 仍返回安全的模型、上下文和消息数字段。
+- `resources/mobile/index.html`：增加列表轮询、可见性刷新、视图请求 generation guard；处理 `message_start/update/end` 完整生命周期。
+- 流式渲染改为按 content index 合并快照、拒绝短快照回退、稳定复用 DOM、逐条固化 assistant/toolResult 消息、对账时保留未落盘 stream。
+- 修复 thinking block 使用错误字段（`text` → 兼容 `thinking`）及 toolCall 参数字段兼容。
+- 新增 `mobile/tests/pwa-stream.test.mjs`；独立复审发现同 session 的旧 history 响应仍可能覆盖刚完成的消息，已用 `messageRevision` 修复并补测；当前 8/8 通过。
+- 扩展 `mobile/tests/bff.test.mjs` running-state 矩阵；当前 30/30 通过。
+- `npm run build`、inline PWA `node --check`、service worker `node --check`、`git diff --check` 均通过。
+- standalone BFF 已重启且本地 health 正常；公网 `/mobile/` 为 200、`cf-cache-status: DYNAMIC`，已返回本次流式修复标记。
+- 一次旧 session 在线 state 手工断言把“不再 alive 时也必须有 model”设得过严而失败；实际响应 `running:false` 且无 state 符合上游契约，未重复错误假设。
+- 最终独立复审确认同 session history 竞态已解决，无 blocker/high 残留。
+- 官方资料确认 `qwen3.8-max-preview` 为 983,616 context / 131,072 max output；本机 Pi 配置已由错误的 128K/16K 修正，`pi --list-models` 显示 983.6K/131.1K。

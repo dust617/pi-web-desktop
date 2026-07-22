@@ -50,3 +50,15 @@
 - 当前公网 DNS 未完成：1.1.1.1、8.8.8.8、9.9.9.9 查询 NS 均仍为 dnsowl，`mobile.tt56677.top` NXDOMAIN；尚未完成 Gate 0A、真机、长 SSE 和网络切换验收。
 - 发现多个并行 `ns-watchdog.sh` 和 `tunnel-auto-setup-v2.sh` 实例；脚本共享同一日志/状态文件，传播后还会并发 taskkill/start cloudflared，存在竞态。
 - 移动端主要源码、资源、构建配置和文档均未进入当前 HEAD；fresh clone 不包含 MobileBridge，实现存在丢失与不可复现风险。
+
+## 2026-07-23 卡住 session、流式与千问上下文
+
+- 上一 session `019f85e6…` JSONL 共约 7.8 MiB、1413 行，逐行 JSON 校验通过；停在一次压缩条目后，不是文件损坏。
+- pi-web 单会话 state 顶层 `running` 使用 `isAlive()`，而列表 `runningSessionIds` 使用 `isRunning()`；移动端必须将 active 定义为 alive 且 `isPromptRunning || isStreaming || isCompacting`。
+- PWA 原先忽略 `message_end`。一次 agent run 中每次工具调用前后会产生多条 assistant/toolResult 消息；下一条 `message_update` 会替换唯一 streaming bubble，导致上一段先消失，`agent_end` 拉历史后才重新出现。
+- pi-ai 的 `assistantMessageEvent` 带 `contentIndex`，文本、thinking、tool-call block 可以交错；流式 reducer 应按数组索引合并，并拒绝较短的回退快照，不能按到达顺序拼段。
+- MobileBridge 与 pi-web 都发送未命名 SSE `data: {"type":"connected"}`；浏览器的 `addEventListener("connected")` 不会触发，必须在 JSON `type` 分支中做重连对账。
+- `refreshHistory()` 若没有 session/load guard，会让旧请求覆盖新会话；全量 history render 还会清掉当前未落盘 streaming DOM，需保留并重绘流式快照。
+- 阿里云官方 OpenCode/Kilo CLI/OpenClaw 配置对精确模型 `qwen3.8-max-preview` 给出 `contextWindow=983616`、最大输出 `131072`；无需额外长上下文参数。
+- 本机 `~/.pi/agent/models.json` 原来显式写成 `128000/16384`，Pi 因而显示 128K，并按这个错误窗口提前触发压缩；已修为官方精确值。现有运行会话需重新选择模型或重启后才会拿到新 Model 对象。
+- 官方来源：<https://help.aliyun.com/zh/model-studio/opencode>、<https://help.aliyun.com/zh/model-studio/kilo-cli>、<https://help.aliyun.com/zh/model-studio/openclaw>。

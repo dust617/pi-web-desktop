@@ -222,3 +222,19 @@ HTTPS(mobile.tt56677.top/mobile/): 000  ← 由上一行决定, 预期
 2. 手机浏览器打开 `https://mobile.tt56677.top/mobile/`。
 3. 输入 `bff-pairing-code.txt` 里的当前配对码。
 4. 验证：项目列表 → 会话列表 → 历史 → SSE 流式 → 发送 → 中止 → 切模型 → 上下文用量 → 添加到主屏幕（PWA）。
+
+---
+
+## 2026-07-23 更新：running/绿点/流式顺序 + 千问上下文
+
+- 已恢复并接续卡住的 `019f85e6…` session；JSONL 完整，停点是超长上下文压缩，不是 session 文件损坏。
+- BFF `/state` 不再把持久 agent 的 `isAlive()` 当作运行中；active 统一为 `isPromptRunning || isStreaming || isCompacting`（且要求 agent alive）。idle 时仍返回模型、上下文用量等安全字段。
+- 项目/会话列表在可见时每 5 秒刷新，并在页面回到前台时立即刷新；绿点现在使用 pi-web 的 active-running 列表语义。
+- PWA 现完整处理 `message_start` / `message_update` / `message_end`：每条 assistant/toolResult 消息在结束时固化，下一轮工具调用不会再把上一段回复替换掉。
+- 流式 block 按 content index 合并，拒绝较短回退快照；稳定复用 streaming DOM，并使用 animation frame 合并高频更新，减少手机端闪烁与重排。
+- history/state 对账增加 session/load guard；旧请求不能覆盖新会话，对账也不会清掉当前尚未落盘的流式 bubble。
+- `connected` 是未命名 SSE data 记录，不是浏览器 named event；重连对账已移到 JSON `type:"connected"` 分支并去重。
+- 修复 thinking 内容字段（`thinking`）及 toolCall 参数字段兼容，模型思考阶段不再表现为长时间完全无内容。
+- 新增回归：`mobile/tests/pwa-stream.test.mjs` 8/8（含同 session history/message_end 并发竞态）；BFF 状态矩阵 30/30；TypeScript、PWA/SW 语法和 diff check 均通过。
+- 本机 `~/.pi/agent/models.json` 的 `qwen3.8-max-preview` 原误配为 128K/16K；已按阿里云官方精确值改为 context `983616`、max output `131072`。Pi CLI 已显示 `983.6K / 131.1K`。现有已加载会话需重新选择该模型或重启后才能拿到新元数据。
+- 注意：更大窗口解决的是错误的提前压缩/128K 显示，不会消除模型推理、网络或超长 prompt 本身的延迟；保留自动压缩与余量仍是正确做法。

@@ -21,6 +21,25 @@ function json(res, obj, status = 200) {
 }
 
 let lastAgentBody = null;
+function upstreamState(running = true, flags = {}) {
+  return {
+    running,
+    state: {
+      model: { provider: "prov", id: "m1" },
+      systemPrompt: "SECRET_PROMPT_XYZ",
+      sessionFile: "/secret/path.json",
+      queuedMessages: ["q"],
+      extensionStatuses: {},
+      contextUsage: { percent: 42 },
+      messageCount: 3,
+      isPromptRunning: false,
+      isStreaming: false,
+      isCompacting: false,
+      ...flags,
+    },
+  };
+}
+let mockState = upstreamState();
 const mock = http.createServer((req, res) => {
   const u = new URL(req.url, "http://x"); const p = u.pathname;
   const parts = p.split("/").filter(Boolean);
@@ -36,7 +55,7 @@ const mock = http.createServer((req, res) => {
     return json(res, { sessionId: parts[2], context: { messages: [{ role: "user", content: "hello" }], model: { provider: "prov", id: "m1" }, thinkingLevel: "off" }, info: { messageCount: 1 } });
   }
   if (parts[0] === "api" && parts[1] === "sessions" && parts[3] === "state") {
-    return json(res, { running: false, state: { model: { provider: "prov", id: "m1" }, systemPrompt: "SECRET_PROMPT_XYZ", sessionFile: "/secret/path.json", queuedMessages: ["q"], extensionStatuses: {}, contextUsage: { percent: 42 }, messageCount: 3 } });
+    return json(res, mockState);
   }
   res.writeHead(404); res.end("mock 404 " + p);
 });
@@ -115,7 +134,23 @@ async function main() {
   r = await req(P, "GET", "/mobile/api/v1/sessions/s1/state", { headers: { Cookie: cookie } });
   const stxt = r.text();
   check("T9 state -> 200", r.status === 200);
+  check("T9 alive but idle -> running false", r.json()?.running === false, stxt.slice(0, 160));
+  check("T9 idle state keeps safe model/context fields", r.json()?.model?.id === "m1" && r.json()?.contextUsage?.percent === 42, stxt.slice(0, 160));
   check("T9 state hides systemPrompt/sessionFile", !stxt.includes("SECRET_PROMPT_XYZ") && !stxt.includes("/secret/path.json"), stxt.slice(0, 120));
+
+  mockState = upstreamState(true, { isPromptRunning: true });
+  r = await req(P, "GET", "/mobile/api/v1/sessions/s1/state", { headers: { Cookie: cookie } });
+  check("T9 prompt running -> running true", r.json()?.running === true, r.text().slice(0, 160));
+  mockState = upstreamState(true, { isStreaming: true });
+  r = await req(P, "GET", "/mobile/api/v1/sessions/s1/state", { headers: { Cookie: cookie } });
+  check("T9 streaming -> running true", r.json()?.running === true, r.text().slice(0, 160));
+  mockState = upstreamState(true, { isCompacting: true });
+  r = await req(P, "GET", "/mobile/api/v1/sessions/s1/state", { headers: { Cookie: cookie } });
+  check("T9 compacting -> running true", r.json()?.running === true, r.text().slice(0, 160));
+  mockState = upstreamState(false, { isStreaming: true });
+  r = await req(P, "GET", "/mobile/api/v1/sessions/s1/state", { headers: { Cookie: cookie } });
+  check("T9 agent not alive -> running false", r.json()?.running === false, r.text().slice(0, 160));
+  mockState = upstreamState();
 
   r = await req(P, "GET", "/mobile/api/v1/sessions/s1/history", { headers: { Cookie: cookie } });
   check("T10 history -> 200 + messages", r.status === 200 && Array.isArray(r.json().messages));

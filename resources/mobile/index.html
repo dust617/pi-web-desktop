@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover,interactive-widget=resizes-content">
 <meta name="theme-color" content="#16213e">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -126,9 +126,16 @@ let viewStack = [];
 let currentProjectId = null;
 let currentSessionId = null;
 let currentMessages = [];
+let messageRevision = 0;
 let sseSource = null;
 let isRunning = false;
 let streamingMsg = null;
+let streamRenderFrame = null;
+let reconnectSyncTimer = null;
+let statePollTimer = null;
+let listPollTimer = null;
+let viewLoadId = 0;
+let isSending = false;
 
 // ─── API helpers ─────────────────────────────────────────────────────
 async function api(path, opts = {}) {
@@ -182,7 +189,9 @@ function renderView(data) {
 
 // ─── Login ───────────────────────────────────────────────────────────
 function showLogin() {
+  viewLoadId++;
   closeSSE();
+  clearListPoll();
   currentView = "login";
   viewStack = [];
   document.getElementById("headerTitle").textContent = "Pi Web Mobile";
@@ -226,82 +235,117 @@ async function doLogin() {
 }
 
 // ─── Projects ────────────────────────────────────────────────────────
-async function showProjects() {
+function clearListPoll() {
+  if (listPollTimer) {
+    clearTimeout(listPollTimer);
+    listPollTimer = null;
+  }
+}
+
+function scheduleListRefresh() {
+  clearListPoll();
+  listPollTimer = setTimeout(() => {
+    listPollTimer = null;
+    if (document.visibilityState === "hidden") {
+      scheduleListRefresh();
+    } else if (currentView === "projects") {
+      showProjects(true);
+    } else if (currentView === "sessions") {
+      showSessions(currentProjectId, true);
+    }
+  }, 5000);
+}
+
+async function showProjects(silent = false) {
+  const loadId = ++viewLoadId;
+  clearListPoll();
   currentView = "projects";
   document.getElementById("headerTitle").textContent = "项目";
-  setStatus("loading");
+  if (!silent) setStatus("loading");
   const content = document.getElementById("content");
   try {
     const data = await api("/projects");
+    if (loadId !== viewLoadId || currentView !== "projects") return;
     setStatus("ok");
     if (!data.projects?.length) {
       content.innerHTML = `<div class="empty">暂无项目</div>`;
-      return;
+    } else {
+      // Build items via DOM so API data never lands in an inline event handler
+      // (P1-1: paths with quotes/spaces/& previously broke the onclick attribute).
+      const list = document.createElement("div");
+      list.className = "list";
+      for (const p of data.projects) {
+        const item = document.createElement("div");
+        item.className = "list-item";
+        item.dataset.projectId = p.projectId;
+        item.innerHTML =
+          `<div class="name">${p.hasRunning ? '<span class="dot"></span>' : ''}${esc(p.name)}</div>` +
+          `<div class="meta"><span>${p.sessionCount} 会话</span><span>${timeAgo(p.lastModified)}</span></div>`;
+        item.addEventListener("click", () => navigate("sessions", { projectId: item.dataset.projectId }));
+        list.appendChild(item);
+      }
+      content.innerHTML = "";
+      content.appendChild(list);
     }
-    // Build items via DOM so API data never lands in an inline event handler
-    // (P1-1: paths with quotes/spaces/& previously broke the onclick attribute).
-    const list = document.createElement("div");
-    list.className = "list";
-    for (const p of data.projects) {
-      const item = document.createElement("div");
-      item.className = "list-item";
-      item.dataset.projectId = p.projectId;
-      item.innerHTML =
-        `<div class="name">${p.hasRunning ? '<span class="dot"></span>' : ''}${esc(p.name)}</div>` +
-        `<div class="meta"><span>${p.sessionCount} 会话</span><span>${timeAgo(p.lastModified)}</span></div>`;
-      item.addEventListener("click", () => navigate("sessions", { projectId: item.dataset.projectId }));
-      list.appendChild(item);
-    }
-    content.innerHTML = "";
-    content.appendChild(list);
   } catch (e) {
-    if (e.message === "UNAUTHORIZED") return;
+    if (e.message === "UNAUTHORIZED" || loadId !== viewLoadId || currentView !== "projects") return;
     setStatus("err");
     content.innerHTML = `<div class="empty">加载失败: ${esc(e.message)}</div>`;
+  } finally {
+    if (loadId === viewLoadId && currentView === "projects") scheduleListRefresh();
   }
 }
 
 // ─── Sessions ────────────────────────────────────────────────────────
-async function showSessions(projectId) {
+async function showSessions(projectId, silent = false) {
+  const loadId = ++viewLoadId;
+  clearListPoll();
   currentView = "sessions";
   currentProjectId = projectId;
   document.getElementById("headerTitle").textContent = projectId ? projectId.split(/[/\\]/).pop() : "会话";
-  setStatus("loading");
+  if (!silent) setStatus("loading");
   const content = document.getElementById("content");
   try {
     const data = await api(`/projects/${encodeURIComponent(projectId)}/sessions`);
+    if (loadId !== viewLoadId || currentView !== "sessions" || currentProjectId !== projectId) return;
     setStatus("ok");
     if (!data.sessions?.length) {
       content.innerHTML = `<div class="empty">暂无会话</div>`;
-      return;
+    } else {
+      const list = document.createElement("div");
+      list.className = "list";
+      for (const s of data.sessions) {
+        const item = document.createElement("div");
+        item.className = "list-item";
+        item.dataset.sessionId = s.sessionId;
+        item.innerHTML =
+          `<div class="name">${s.running ? '<span class="dot"></span>' : ''}${esc(s.name || s.sessionId.slice(0, 12))}</div>` +
+          `<div class="meta"><span>${s.messageCount} 条消息</span><span>${timeAgo(s.modified)}</span></div>` +
+          (s.preview ? `<div class="preview">${esc(s.preview)}</div>` : "");
+        item.addEventListener("click", () => navigate("chat", { sessionId: item.dataset.sessionId }));
+        list.appendChild(item);
+      }
+      content.innerHTML = "";
+      content.appendChild(list);
     }
-    const list = document.createElement("div");
-    list.className = "list";
-    for (const s of data.sessions) {
-      const item = document.createElement("div");
-      item.className = "list-item";
-      item.dataset.sessionId = s.sessionId;
-      item.innerHTML =
-        `<div class="name">${s.running ? '<span class="dot"></span>' : ''}${esc(s.name || s.sessionId.slice(0, 12))}</div>` +
-        `<div class="meta"><span>${s.messageCount} 条消息</span><span>${timeAgo(s.modified)}</span></div>` +
-        (s.preview ? `<div class="preview">${esc(s.preview)}</div>` : "");
-      item.addEventListener("click", () => navigate("chat", { sessionId: item.dataset.sessionId }));
-      list.appendChild(item);
-    }
-    content.innerHTML = "";
-    content.appendChild(list);
   } catch (e) {
-    if (e.message === "UNAUTHORIZED") return;
+    if (e.message === "UNAUTHORIZED" || loadId !== viewLoadId || currentView !== "sessions" || currentProjectId !== projectId) return;
     setStatus("err");
     content.innerHTML = `<div class="empty">加载失败: ${esc(e.message)}</div>`;
+  } finally {
+    if (loadId === viewLoadId && currentView === "sessions" && currentProjectId === projectId) scheduleListRefresh();
   }
 }
 
 // ─── Chat ────────────────────────────────────────────────────────────
 async function showChat(sessionId) {
+  const loadId = ++viewLoadId;
+  clearListPoll();
+  closeSSE();
   currentView = "chat";
   currentSessionId = sessionId;
   currentMessages = [];
+  messageRevision++;
   streamingMsg = null;
   document.getElementById("headerTitle").textContent = sessionId?.slice(0, 12) ?? "会话";
   document.getElementById("inputArea").style.display = "";
@@ -313,7 +357,9 @@ async function showChat(sessionId) {
   // Load history
   try {
     const hist = await api(`/sessions/${encodeURIComponent(sessionId)}/history`);
+    if (loadId !== viewLoadId || currentView !== "chat" || currentSessionId !== sessionId) return;
     currentMessages = hist.messages ?? [];
+    messageRevision++;
     renderMessages();
   } catch (e) {
     if (e.message === "UNAUTHORIZED") return;
@@ -327,6 +373,7 @@ async function showChat(sessionId) {
       api(`/sessions/${encodeURIComponent(sessionId)}/state`),
       api(`/sessions/${encodeURIComponent(sessionId)}/models`),
     ]);
+    if (loadId !== viewLoadId || currentView !== "chat" || currentSessionId !== sessionId) return;
     isRunning = state.running;
     updateRunningUI();
     updateContextInfo(state);
@@ -335,8 +382,14 @@ async function showChat(sessionId) {
     if (e.message === "UNAUTHORIZED") return;
   }
 
+  if (loadId !== viewLoadId || currentView !== "chat" || currentSessionId !== sessionId) return;
+
   // Connect SSE
   connectSSE(sessionId);
+  // Periodic state poll as a fallback so the send/stop button and context usage stay
+  // correct even if an SSE agent_end event is missed (e.g. during a reconnect).
+  if (statePollTimer) clearInterval(statePollTimer);
+  statePollTimer = setInterval(refreshState, 5000);
   setStatus("ok");
   scrollToBottom();
 }
@@ -356,12 +409,14 @@ function renderMessage(msg, idx) {
   if (role === "assistant") {
     let html = "";
     for (const block of (msg.content ?? [])) {
-      if (block.type === "thinking" && block.text) {
-        html += `<div class="thinking">${esc(block.text.slice(0, 500))}${block.text.length > 500 ? "…" : ""}</div>`;
+      const thinking = block.thinking ?? block.text;
+      if (block.type === "thinking" && thinking) {
+        html += `<div class="thinking">${esc(thinking.slice(0, 500))}${thinking.length > 500 ? "…" : ""}</div>`;
       } else if (block.type === "text" && block.text) {
         html += esc(block.text);
       } else if (block.type === "toolCall") {
-        html += `<div class="tool-call"><span class="tc-name">${esc(block.name)}</span> ${esc(JSON.stringify(block.input).slice(0, 200))}</div>`;
+        const args = block.arguments ?? block.input ?? {};
+        html += `<div class="tool-call"><span class="tc-name">${esc(block.name)}</span> ${esc(JSON.stringify(args).slice(0, 200))}</div>`;
       }
     }
     return `<div class="msg assistant">${html || "<em>(empty)</em>"}</div>`;
@@ -379,37 +434,109 @@ function extractText(content) {
   return content.filter(b => b.type === "text").map(b => b.text).join("\n");
 }
 
-function appendStreamingMessage(msg) {
-  streamingMsg = msg;
+function mergeStreamBlock(current, incoming) {
+  if (!incoming) return current;
+  if (!current || current.type !== incoming.type) return incoming;
+  if (incoming.type === "text") {
+    return incoming.text?.length >= (current.text?.length ?? 0) ? incoming : current;
+  }
+  if (incoming.type === "thinking") {
+    const oldText = current.thinking ?? current.text ?? "";
+    const newText = incoming.thinking ?? incoming.text ?? "";
+    return newText.length >= oldText.length ? incoming : current;
+  }
+  // Tool-call snapshots contain progressively parsed arguments; the latest
+  // indexed snapshot is authoritative even when other blocks interleave.
+  return incoming;
+}
+
+function updateStreamingMessage(event) {
+  const outer = event.message;
+  const partial = event.assistantMessageEvent?.partial;
+  const incoming = partial?.role === "assistant" ? partial : outer;
+  if (incoming?.role !== "assistant") return;
+  const isNewMessage = event.type === "message_start" || !streamingMsg ||
+    (incoming.timestamp != null && streamingMsg.timestamp != null && incoming.timestamp !== streamingMsg.timestamp);
+  if (isNewMessage) {
+    streamingMsg = { ...incoming, content: [...(incoming.content ?? [])] };
+  } else {
+    const oldBlocks = streamingMsg.content ?? [];
+    const newBlocks = incoming.content ?? [];
+    const merged = [];
+    for (let i = 0; i < Math.max(oldBlocks.length, newBlocks.length); i++) {
+      merged[i] = mergeStreamBlock(oldBlocks[i], newBlocks[i]);
+    }
+    streamingMsg = { ...streamingMsg, ...incoming, content: merged };
+  }
+  // Coalesce rapid snapshots into one paint and keep the same DOM node.
+  if (streamRenderFrame == null) streamRenderFrame = requestAnimationFrame(renderStreamingMessage);
+}
+
+function renderStreamingMessage() {
+  streamRenderFrame = null;
+  const msg = streamingMsg;
   const container = document.getElementById("chatMessages");
-  if (!container) return;
-  // Remove existing streaming element
-  const existing = container.querySelector(".streaming");
-  if (existing) existing.remove();
-  const div = document.createElement("div");
-  div.className = "msg assistant streaming";
+  if (!msg || !container) return;
+  let div = container.querySelector(".streaming");
+  if (!div) {
+    div = document.createElement("div");
+    div.className = "msg assistant streaming";
+    container.appendChild(div);
+  }
   let html = "";
   for (const block of (msg.content ?? [])) {
-    if (block.type === "thinking" && block.text) {
-      html += `<div class="thinking">${esc(block.text.slice(0, 300))}</div>`;
+    const thinking = block.thinking ?? block.text;
+    if (block.type === "thinking" && thinking) {
+      html += `<div class="thinking">${esc(thinking.slice(0, 300))}</div>`;
     } else if (block.type === "text" && block.text) {
       html += esc(block.text);
     } else if (block.type === "toolCall") {
       html += `<div class="tool-call"><span class="tc-name">${esc(block.name)}</span> …</div>`;
     }
   }
-  html += '<span class="streaming-indicator"></span>';
-  div.innerHTML = html;
-  container.appendChild(div);
+  div.innerHTML = html + '<span class="streaming-indicator"></span>';
   scrollToBottom();
 }
 
 function removeStreamingMessage() {
+  if (streamRenderFrame != null) {
+    cancelAnimationFrame(streamRenderFrame);
+    streamRenderFrame = null;
+  }
   const container = document.getElementById("chatMessages");
-  if (!container) return;
-  const el = container.querySelector(".streaming");
+  const el = container?.querySelector(".streaming");
   if (el) el.remove();
   streamingMsg = null;
+}
+
+function messageIdentity(msg) {
+  if (!msg) return "";
+  if (msg.timestamp != null) return `${msg.role}:${msg.timestamp}`;
+  return `${msg.role}:${JSON.stringify(msg.content ?? "")}`;
+}
+
+function finalizeMessage(msg) {
+  if (!msg) return;
+  const key = messageIdentity(msg);
+  if (msg.role === "user") {
+    // Replace the optimistic bubble with the authoritative event. The desktop
+    // stream emits user message_start/message_end before assistant output.
+    let optimisticIndex = -1;
+    for (let i = currentMessages.length - 1; i >= 0; i--) {
+      if (currentMessages[i]._optimistic) { optimisticIndex = i; break; }
+    }
+    const duplicateIndex = currentMessages.findIndex((m) => !m._optimistic && messageIdentity(m) === key);
+    if (optimisticIndex >= 0) currentMessages[optimisticIndex] = msg;
+    else if (duplicateIndex < 0) currentMessages.push(msg);
+  } else {
+    const last = currentMessages[currentMessages.length - 1];
+    if (last && messageIdentity(last) === key) currentMessages[currentMessages.length - 1] = msg;
+    else currentMessages.push(msg);
+  }
+  messageRevision++;
+  removeStreamingMessage();
+  renderMessages();
+  scrollToBottom();
 }
 
 // ─── SSE ────────────────────────────────────────────────────────────
@@ -431,10 +558,30 @@ function connectSSE(sessionId) {
     // Auto-reconnect handled by EventSource
   };
 
-  sseSource.addEventListener("connected", () => setStatus("ok"));
+}
+
+function scheduleReconnectSync() {
+  // Both MobileBridge and pi-web emit an unnamed JSON {type:"connected"}
+  // record. Debounce the pair and reconcile snapshots after every reconnect.
+  if (reconnectSyncTimer) clearTimeout(reconnectSyncTimer);
+  reconnectSyncTimer = setTimeout(() => {
+    reconnectSyncTimer = null;
+    if (currentView === "chat") {
+      refreshHistory();
+      refreshState();
+    }
+  }, 100);
 }
 
 function closeSSE() {
+  if (reconnectSyncTimer) {
+    clearTimeout(reconnectSyncTimer);
+    reconnectSyncTimer = null;
+  }
+  if (statePollTimer) {
+    clearInterval(statePollTimer);
+    statePollTimer = null;
+  }
   if (sseSource) {
     sseSource.close();
     sseSource = null;
@@ -445,14 +592,23 @@ function handleSSEEvent(event) {
   switch (event.type) {
     case "connected":
       setStatus("ok");
+      scheduleReconnectSync();
       break;
     case "agent_start":
       isRunning = true;
       updateRunningUI();
       break;
+    case "message_start":
     case "message_update":
-      // Full replacement of streaming message
-      if (event.message) appendStreamingMessage(event.message);
+      // Each update contains the full current assistant-message snapshot. Ignore
+      // user snapshots; the optimistic/final user bubble is handled separately.
+      if (event.message?.role === "assistant") updateStreamingMessage(event);
+      break;
+    case "message_end":
+      // One agent run may contain several assistant messages separated by tool
+      // calls. Finalize every message here; waiting for agent_end made each prior
+      // segment disappear when the next streamed message replaced it.
+      if (event.message) finalizeMessage(event.message);
       break;
     case "agent_end":
       isRunning = false;
@@ -480,18 +636,30 @@ function handleSSEEvent(event) {
 
 async function refreshHistory() {
   if (!currentSessionId) return;
+  const sessionId = currentSessionId;
+  const loadId = viewLoadId;
+  const revision = messageRevision;
   try {
-    const hist = await api(`/sessions/${encodeURIComponent(currentSessionId)}/history`);
+    const hist = await api(`/sessions/${encodeURIComponent(sessionId)}/history`);
+    if (loadId !== viewLoadId || currentView !== "chat" || currentSessionId !== sessionId || revision !== messageRevision) return;
     currentMessages = hist.messages ?? [];
+    messageRevision++;
     renderMessages();
+    // Snapshot reconciliation must not erase a currently unpersisted stream.
+    if (streamingMsg) {
+      if (streamRenderFrame == null) streamRenderFrame = requestAnimationFrame(renderStreamingMessage);
+    }
     scrollToBottom();
   } catch { /* ignore */ }
 }
 
 async function refreshState() {
   if (!currentSessionId) return;
+  const sessionId = currentSessionId;
+  const loadId = viewLoadId;
   try {
-    const state = await api(`/sessions/${encodeURIComponent(currentSessionId)}/state`);
+    const state = await api(`/sessions/${encodeURIComponent(sessionId)}/state`);
+    if (loadId !== viewLoadId || currentView !== "chat" || currentSessionId !== sessionId) return;
     isRunning = state.running;
     updateRunningUI();
     updateContextInfo(state);
@@ -499,28 +667,55 @@ async function refreshState() {
 }
 
 // ─── Send / Abort ────────────────────────────────────────────────────
+function setSending(v) {
+  isSending = v;
+  const sendBtn = document.getElementById("sendBtn");
+  if (sendBtn) {
+    sendBtn.disabled = v;
+    sendBtn.textContent = v ? "…" : "↑";
+  }
+}
+
 async function sendMessage() {
   const input = document.getElementById("msgInput");
   const text = input?.value?.trim();
-  if (!text || !currentSessionId) return;
+  if (!text || !currentSessionId || isSending) return;
   input.value = "";
   autoResize(input);
+  // Optimistic update: show the user's message immediately so the phone gives
+  // instant feedback instead of waiting for the SSE round-trip.
+  currentMessages.push({ role: "user", content: text, _optimistic: true });
+  messageRevision++;
+  renderMessages();
+  scrollToBottom();
+  setSending(true);
   try {
     await api(`/sessions/${encodeURIComponent(currentSessionId)}/messages`, {
       method: "POST",
       body: JSON.stringify({ message: text }),
     });
+    // Sent OK: refresh state so the send/stop button updates promptly.
+    refreshState();
   } catch (e) {
     alert("发送失败: " + e.message);
+    // Roll the optimistic message back to the server truth.
+    refreshHistory();
+  } finally {
+    setSending(false);
   }
 }
 
 async function abortSession() {
   if (!currentSessionId) return;
+  const abortBtn = document.getElementById("abortBtn");
+  if (abortBtn) { abortBtn.disabled = true; abortBtn.textContent = "…"; }
   try {
     await api(`/sessions/${encodeURIComponent(currentSessionId)}/abort`, { method: "POST", body: "{}" });
+    refreshState();
   } catch (e) {
     console.error("abort failed:", e);
+  } finally {
+    if (abortBtn) { abortBtn.disabled = false; abortBtn.textContent = "■"; }
   }
 }
 
@@ -615,12 +810,61 @@ function timeAgo(iso) {
   return new Date(iso).toLocaleDateString("zh-CN");
 }
 
+// ─── Keyboard / viewport adaptation ────────────────────────────────
+// With `interactive-widget=resizes-content` the layout viewport shrinks when
+// the on-screen keyboard opens, so the flex layout reflows and the input bar
+// sits above the keyboard. These handlers additionally keep the latest message
+// visible while typing.
+function setupViewportHandling() {
+  const vv = window.visualViewport;
+  if (vv) {
+    vv.addEventListener("resize", () => {
+      const msgInput = document.getElementById("msgInput");
+      // Only snap to bottom while the user is actually typing (input focused),
+      // so reading history isn't interrupted by unrelated viewport changes.
+      if (currentView === "chat" && msgInput && document.activeElement === msgInput) {
+        requestAnimationFrame(() => scrollToBottom());
+      }
+    });
+  }
+  const msgInput = document.getElementById("msgInput");
+  if (msgInput) {
+    msgInput.addEventListener("focus", () => {
+      // Give the keyboard animation a moment, then reveal the latest message.
+      setTimeout(() => { if (currentView === "chat") scrollToBottom(); }, 300);
+    });
+  }
+}
+
+// ─── Tap outside to dismiss menus / keyboard ────────────────────────
+// Native <select> popovers and the on-screen keyboard stay open on some
+// devices after tapping elsewhere. Blur the focused control when the user
+// taps a non-interactive area so dropdowns collapse and the keyboard hides.
+function setupTapOutside() {
+  document.addEventListener("pointerdown", (e) => {
+    const t = e.target;
+    if (t && t.closest && t.closest("input, textarea, select, button, a, .list-item")) return;
+    const active = document.activeElement;
+    if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.tagName === "SELECT")) {
+      active.blur();
+    }
+  }, { passive: true });
+}
+
 // ─── Init ────────────────────────────────────────────────────────────
 (async function init() {
   // Register service worker
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/mobile/sw.js").catch(() => {});
   }
+  setupViewportHandling();
+  setupTapOutside();
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    if (currentView === "projects") showProjects(true);
+    else if (currentView === "sessions") showSessions(currentProjectId, true);
+    else if (currentView === "chat") { refreshHistory(); refreshState(); }
+  });
   // Check if already authenticated
   try {
     await api("/projects");

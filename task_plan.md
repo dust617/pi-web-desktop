@@ -42,3 +42,13 @@
 ## 当前下一步（移动端检查）
 
 先修复公开配对码端点、集成版公网 Origin 配置和项目卡片点击；随后补可重复的 BFF/PWA 自动测试，再做公网真机验收。
+
+## 当前任务：卡住 session 恢复与移动流式修复（进行中）
+
+1. [x] 恢复 `019f85e6…` session 压缩摘要并确认 JSONL 未损坏
+2. [x] 修复 idle/active running 语义，补 BFF 状态回归
+3. [x] 增加项目/会话列表运行状态轮询与异步视图防串页
+4. [x] 修复多轮 assistant/tool 流式段落消失、乱序、闪烁和 thinking 不显示
+5. [x] 增加 PWA 流式 reducer 回归测试
+6. [x] 核对并修正 `qwen3.8-max-preview` 上下文/输出元数据
+7. [x] 重启 standalone BFF，完成本地/公网验收、独立复审和提交
