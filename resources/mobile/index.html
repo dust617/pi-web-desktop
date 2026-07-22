@@ -28,7 +28,7 @@
 }
 * { margin:0; padding:0; box-sizing:border-box; }
 html,body { height:100%; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--text); font-size:15px; -webkit-tap-highlight-color:transparent; }
-body { display:flex; flex-direction:column; overflow:hidden; }
+body { display:flex; flex-direction:column; overflow:hidden; height:100vh; height:100dvh; }
 
 /* ── Header ─ */
 .header { display:flex; align-items:center; gap:8px; padding:12px 16px; background:var(--surface); border-bottom:1px solid var(--border); min-height:52px; flex-shrink:0; }
@@ -85,6 +85,10 @@ body { display:flex; flex-direction:column; overflow:hidden; }
 .input-bar .abort-btn { background:var(--danger); color:#fff; }
 .input-bar button:disabled { opacity:0.4; cursor:default; }
 
+/* ── Jump-to-latest button (shown when new content arrives while scrolled up) ── */
+.jump-btn { position:fixed; left:50%; transform:translateX(-50%); bottom:calc(112px + var(--safe-bottom)); background:var(--accent); color:#000; border:none; border-radius:16px; padding:7px 16px; font-size:13px; font-weight:600; box-shadow:0 2px 10px rgba(0,0,0,0.5); z-index:50; cursor:pointer; }
+.jump-btn:active { opacity:0.8; }
+
 /* ── Model bar ── */
 .model-bar { display:flex; align-items:center; gap:8px; padding:6px 12px; background:var(--surface); border-top:1px solid var(--border); flex-shrink:0; font-size:12px; color:var(--text2); }
 .model-bar select { flex:1; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:6px 8px; font-size:13px; outline:none; }
@@ -105,6 +109,8 @@ body { display:flex; flex-direction:column; overflow:hidden; }
 </div>
 
 <div class="content" id="content"></div>
+
+<button id="jumpBtn" class="jump-btn" style="display:none" onclick="jumpToBottom()">↓ 新消息</button>
 
 <div id="inputArea" style="display:none">
   <div class="model-bar" id="modelBar">
@@ -391,7 +397,7 @@ async function showChat(sessionId) {
   if (statePollTimer) clearInterval(statePollTimer);
   statePollTimer = setInterval(refreshState, 5000);
   setStatus("ok");
-  scrollToBottom();
+  stickToBottom = true; clearUnseen(); scrollToBottom(true);
 }
 
 function renderMessages() {
@@ -687,7 +693,7 @@ async function sendMessage() {
   currentMessages.push({ role: "user", content: text, _optimistic: true });
   messageRevision++;
   renderMessages();
-  scrollToBottom();
+  stickToBottom = true; clearUnseen(); scrollToBottom(true);
   setSending(true);
   try {
     await api(`/sessions/${encodeURIComponent(currentSessionId)}/messages`, {
@@ -787,9 +793,53 @@ function setStatus(s) {
   if (el) el.className = `status ${s}`;
 }
 
-function scrollToBottom() {
-  const content = document.getElementById("content");
-  if (content) requestAnimationFrame(() => content.scrollTop = content.scrollHeight);
+// ─── Smart auto-scroll ───────────────────────────────────────────────
+// Follow new content only while the user is at (or near) the bottom. If they
+// scroll up to read history we stop yanking them down and instead surface a
+// "↓ 新消息" button; auto-follow resumes the moment they return to the bottom
+// or tap that button.
+let stickToBottom = true;
+let unseenNew = false;
+const STICK_THRESHOLD = 90; // px from bottom that still counts as "at bottom"
+
+function isNearBottom() {
+  const c = document.getElementById("content");
+  if (!c) return true;
+  return c.scrollHeight - c.scrollTop - c.clientHeight < STICK_THRESHOLD;
+}
+
+function scrollToBottom(force = false) {
+  const c = document.getElementById("content");
+  if (!c) return;
+  if (!force && !stickToBottom) {
+    markUnseen(); // user is reading up — don't grab, just flag new content below
+    return;
+  }
+  requestAnimationFrame(() => { c.scrollTop = c.scrollHeight; });
+}
+
+function markUnseen() {
+  if (currentView !== "chat") return;
+  unseenNew = true;
+  const b = document.getElementById("jumpBtn");
+  if (b) b.style.display = "";
+}
+
+function clearUnseen() {
+  unseenNew = false;
+  const b = document.getElementById("jumpBtn");
+  if (b) b.style.display = "none";
+}
+
+function onContentScroll() {
+  stickToBottom = isNearBottom();
+  if (stickToBottom) clearUnseen();
+}
+
+function jumpToBottom() {
+  stickToBottom = true;
+  clearUnseen();
+  scrollToBottom(true);
 }
 
 function esc(s) {
@@ -823,7 +873,7 @@ function setupViewportHandling() {
       // Only snap to bottom while the user is actually typing (input focused),
       // so reading history isn't interrupted by unrelated viewport changes.
       if (currentView === "chat" && msgInput && document.activeElement === msgInput) {
-        requestAnimationFrame(() => scrollToBottom());
+        requestAnimationFrame(() => scrollToBottom(true));
       }
     });
   }
@@ -831,7 +881,7 @@ function setupViewportHandling() {
   if (msgInput) {
     msgInput.addEventListener("focus", () => {
       // Give the keyboard animation a moment, then reveal the latest message.
-      setTimeout(() => { if (currentView === "chat") scrollToBottom(); }, 300);
+      setTimeout(() => { if (currentView === "chat") { stickToBottom = true; clearUnseen(); scrollToBottom(true); } }, 300);
     });
   }
 }
@@ -857,7 +907,7 @@ function setupTapOutside() {
   // PWA_VERSION must match VERSION in sw.js; bump BOTH on every deploy.
   // When a newly-activated SW announces a different version, the page reloads
   // itself once — so users get updates without ever clearing cache.
-  const PWA_VERSION = "pi-mobile-v3";
+  const PWA_VERSION = "pi-mobile-v4";
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/mobile/sw.js").then((reg) => {
       navigator.serviceWorker.addEventListener("message", (e) => {
@@ -887,6 +937,8 @@ function setupTapOutside() {
   }
   setupViewportHandling();
   setupTapOutside();
+  const contentEl = document.getElementById("content");
+  if (contentEl) contentEl.addEventListener("scroll", onContentScroll, { passive: true });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "visible") return;
     if (currentView === "projects") showProjects(true);

@@ -10,7 +10,7 @@
 //     reloads once if they differ — picking up the new shell automatically.
 //
 // API/auth/SSE are never intercepted. Offline launch still works from cache.
-const VERSION = "pi-mobile-v3";
+const VERSION = "pi-mobile-v4";
 const CACHE_NAME = VERSION;
 const SHELL_URLS = ["/mobile/", "/mobile/index.html", "/mobile/manifest.json"];
 
