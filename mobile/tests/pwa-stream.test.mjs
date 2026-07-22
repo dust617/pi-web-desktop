@@ -95,4 +95,51 @@ if (!concurrentFinalPreserved) throw new Error("FAIL same-session stale history 
 pass++;
 console.log("  ok   same-session stale history cannot erase a finalized message");
 
+const smartScrollPauses = vm.runInContext(`(() => {
+  const content = {scrollHeight:1000, scrollTop:100, clientHeight:400};
+  const jump = {style:{display:"none"}};
+  document.getElementById = (id) => id === "content" ? content : (id === "jumpBtn" ? jump : null);
+  currentView = "chat";
+  stickToBottom = true;
+  onContentScroll();
+  scrollToBottom();
+  return stickToBottom === false && jump.style.display === "";
+})()`, context);
+if (!smartScrollPauses) throw new Error("FAIL upward reader scroll pauses auto-follow and shows new-message affordance");
+pass++;
+console.log("  ok   upward reader scroll pauses auto-follow and shows new-message affordance");
+
+check("jump-to-latest resumes auto-follow", `(() => { jumpToBottom(); return stickToBottom === true && document.getElementById("jumpBtn").style.display === "none"; })()`);
+
+const unchangedHistoryNoBadge = await vm.runInContext(`(async () => {
+  const msg = {role:"assistant",timestamp:30,content:[{type:"text",text:"same"}]};
+  const content = {scrollHeight:1000, scrollTop:100, clientHeight:400};
+  const jump = {style:{display:"none"}};
+  document.getElementById = (id) => id === "content" ? content : (id === "jumpBtn" ? jump : null);
+  currentMessages = [msg];
+  messageRevision = 30;
+  currentView = "chat";
+  currentSessionId = "same";
+  viewLoadId = 30;
+  stickToBottom = false;
+  api = async () => ({messages:[msg]});
+  await refreshHistory();
+  return jump.style.display === "none";
+})()`, context);
+if (!unchangedHistoryNoBadge) throw new Error("FAIL identical history reconciliation does not show false new-message badge");
+pass++;
+console.log("  ok   identical history reconciliation does not show false new-message badge");
+
+const authoritativeModelSync = vm.runInContext(`(() => {
+  const a = {value:"a",dataset:{provider:"prov",modelId:"old"}};
+  const b = {value:"b",dataset:{provider:"prov",modelId:"tag:latest"}};
+  const sel = {options:[a,b],value:"a",dataset:{currentValue:"a"}};
+  document.getElementById = (id) => id === "modelSelect" ? sel : null;
+  syncModelSelect({model:{provider:"prov",id:"tag:latest"}});
+  return sel.value === "b" && sel.dataset.currentValue === "b";
+})()`, context);
+if (!authoritativeModelSync) throw new Error("FAIL authoritative model state updates selector losslessly");
+pass++;
+console.log("  ok   authoritative model state updates selector losslessly");
+
 console.log(`\n${pass} passed, 0 failed`);

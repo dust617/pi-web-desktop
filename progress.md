@@ -116,3 +116,14 @@
 - 一次旧 session 在线 state 手工断言把“不再 alive 时也必须有 model”设得过严而失败；实际响应 `running:false` 且无 state 符合上游契约，未重复错误假设。
 - 最终独立复审确认同 session history 竞态已解决，无 blocker/high 残留。
 - 官方资料确认 `qwen3.8-max-preview` 为 983,616 context / 131,072 max output；本机 Pi 配置已由错误的 128K/16K 修正，`pi --list-models` 显示 983.6K/131.1K。
+
+## 2026-07-23 移动端全链路复检 + v5
+
+- 确认手机模型切换真实生效：当前 pi-web session 为 `openai-codex/gpt-5.6-sol`、thinking high，不是仅下拉框变化。
+- 双独立 reviewer 审查 PWA/UX 与 BFF/runtime，发现并修复：SW 失败更新误删旧缓存、启动不立即检查更新、模型 selector 不权威对账、相同 history 误报新消息、输入区 flex/viewport 裁切、畸形 cookie 500、HTTP revoke-all 泄露新配对码、SSE 会话过期不关闭。
+- PWA 升至 v5：`visualViewport.height` + 不可收缩输入区；智能滚动尊重上翻；新消息按钮跟随输入区高度；模型切换失败回退并可见报错；桌面/手机模型状态双向对账。
+- 新增 `mobile/tests/pwa-shell.test.mjs`、`mobile/tests/package-parity.test.mjs`；扩展 BFF/PWA 测试。
+- 最终自动测试：BFF 32/32、PWA 12/12、SW/layout 4/4、package parity 6/6；TypeScript、HTML/SW/test 语法和 git diff 检查通过。
+- standalone BFF 仅在 62810 重启，62809/pi-web 与当前会话未重启；公网 v5、Secure cookie、gpt-5.6-sol state、SSE、404 secret routes、401 malformed cookie 均验证通过。当前配对码 `812464`，既有持久化手机 cookie 仍有效。
+- 重新构建安装版与便携版；ASAR 中 `dist/mobile-bridge.js`、`dist/main.js`、PWA HTML/SW/manifest 与当前工作树逐字节一致，不再包含旧公开配对码/revoke-all 路由。
+- 仍待基础设施加固：DEV-only standalone token 文件、cloudflared 后共享登录限流、watchdog 全局 cloudflared 进程管理/只监督隧道不监督 BFF；不阻塞当前真机体验验收。

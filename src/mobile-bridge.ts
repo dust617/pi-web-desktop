@@ -99,7 +99,13 @@ function parseCookies(req: http.IncomingMessage): Record<string, string> {
     if (idx < 1) continue;
     const key = pair.slice(0, idx).trim();
     const val = pair.slice(idx + 1).trim();
-    if (key) map[key] = decodeURIComponent(val);
+    if (!key) continue;
+    try {
+      map[key] = decodeURIComponent(val);
+    } catch {
+      // Treat malformed cookie encoding as an absent/invalid cookie. Public
+      // requests must never turn parser details into a 500 response.
+    }
   }
   return map;
 }
@@ -401,7 +407,7 @@ export class MobileBridge {
       }
 
       // ── All other API endpoints require auth ──
-      if (pathname.startsWith("/mobile/api/v1/") || pathname === "/mobile/auth/logout" || pathname === "/mobile/auth/revoke-all") {
+      if (pathname.startsWith("/mobile/api/v1/") || pathname === "/mobile/auth/logout") {
         if (!this.checkAuth(req, res)) return;
         return this.routeApi(method, pathname, url, req, res);
       }
@@ -542,27 +548,12 @@ export class MobileBridge {
     res.end(JSON.stringify({ ok: true }));
   }
 
-  private handleRevokeAll(req: http.IncomingMessage, res: http.ServerResponse): void {
-    this.auth.revokeAll();
-    // Close all active SSE connections
-    for (const sse of this.activeSSE) {
-      try { sse.end(); } catch { /* ignore */ }
-    }
-    this.activeSSE.clear();
-    res.writeHead(200, {
-      "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "no-store",
-      "Set-Cookie": `mb_session=; ${this.cookieFlags(req, "; Max-Age=0")}`,
-    });
-    res.end(JSON.stringify({ ok: true, newCode: this.auth.code }));
-  }
-
   // ── API Router ─────────────────────────────────────────────────
 
   private async routeApi(method: string, pathname: string, url: URL, req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    // Auth management
+    // Auth management. Pairing rotation/revoke-all intentionally has no HTTP
+    // route; it is an owner-only in-process action exposed by the Electron tray.
     if (pathname === "/mobile/auth/logout" && method === "POST") return this.handleLogout(req, res);
-    if (pathname === "/mobile/auth/revoke-all" && method === "POST") return this.handleRevokeAll(req, res);
 
     // GET /mobile/api/v1/projects
     if (pathname === "/mobile/api/v1/projects" && method === "GET") return this.handleProjects(res);
@@ -852,12 +843,21 @@ export class MobileBridge {
       "X-Accel-Buffering": "no", // nginx/cloudflare hint
     });
     this.activeSSE.add(res);
+    const authSessionId = parseCookies(req)["mb_session"];
 
     // Send initial connected event
     res.write(`data: ${JSON.stringify({ type: "connected", sessionId })}\n\n`);
 
-    // Heartbeat every 20 seconds
+    // Heartbeat every 20 seconds and revalidate auth so a connection cannot
+    // outlive logout/revocation/the seven-day session expiry.
     const heartbeat = setInterval(() => {
+      if (!this.auth.validate(authSessionId)) {
+        try {
+          res.write(`data: ${JSON.stringify({ type: "error", code: "UNAUTHORIZED", message: "Mobile session expired", terminal: true })}\n\n`);
+        } catch { /* client gone */ }
+        cleanup();
+        return;
+      }
       try { res.write(":\n\n"); } catch { /* client gone */ }
     }, 20_000);
 
@@ -872,7 +872,8 @@ export class MobileBridge {
       },
       (upstreamRes) => {
         if (upstreamRes.statusCode !== 200) {
-          res.write(`data: ${JSON.stringify({ type: "error", message: `upstream ${upstreamRes.statusCode}` })}\n\n`);
+          const terminal = upstreamRes.statusCode === 401 || upstreamRes.statusCode === 404;
+          res.write(`data: ${JSON.stringify({ type: "error", message: `upstream ${upstreamRes.statusCode}`, terminal })}\n\n`);
           cleanup();
           return;
         }
@@ -894,7 +895,10 @@ export class MobileBridge {
 
     upstreamReq.end();
 
+    let cleaned = false;
     function cleanup() {
+      if (cleaned) return;
+      cleaned = true;
       clearInterval(heartbeat);
       try { upstreamReq.destroy(); } catch { /* ignore */ }
       try { res.end(); } catch { /* ignore */ }

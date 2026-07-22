@@ -7,6 +7,8 @@
     "build": "tsc",
     "start": "npm run build && electron .",
     "dev": "tsc --watch",
+    "test:mobile": "npm run build && node mobile/tests/bff.test.mjs && node mobile/tests/pwa-stream.test.mjs && node mobile/tests/pwa-shell.test.mjs",
+    "test:package": "node mobile/tests/package-parity.test.mjs",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder"
   },

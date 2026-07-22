@@ -25,10 +25,12 @@
   --tool-bg: #1a2a1a;
   --radius: 12px;
   --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --app-height: 100dvh;
+  --input-area-height: 112px;
 }
 * { margin:0; padding:0; box-sizing:border-box; }
 html,body { height:100%; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--text); font-size:15px; -webkit-tap-highlight-color:transparent; }
-body { display:flex; flex-direction:column; overflow:hidden; height:100vh; height:100dvh; }
+body { display:flex; flex-direction:column; overflow:hidden; height:100vh; height:var(--app-height, 100dvh); }
 
 /* ── Header ─ */
 .header { display:flex; align-items:center; gap:8px; padding:12px 16px; background:var(--surface); border-bottom:1px solid var(--border); min-height:52px; flex-shrink:0; }
@@ -41,7 +43,7 @@ body { display:flex; flex-direction:column; overflow:hidden; height:100vh; heigh
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
 
 /* ── Content ── */
-.content { flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; }
+.content { flex:1; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch; }
 
 /* ── Login ── */
 .login-wrap { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; padding:32px; gap:20px; }
@@ -77,6 +79,7 @@ body { display:flex; flex-direction:column; overflow:hidden; height:100vh; heigh
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
 
 /* ── Input bar ── */
+#inputArea { flex:0 0 auto; min-height:0; }
 .input-bar { display:flex; gap:8px; padding:8px 12px; padding-bottom:calc(8px + var(--safe-bottom)); background:var(--surface); border-top:1px solid var(--border); flex-shrink:0; align-items:flex-end; }
 .input-bar textarea { flex:1; resize:none; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface2); color:var(--text); padding:10px 12px; font-size:15px; font-family:inherit; max-height:120px; min-height:42px; outline:none; line-height:1.4; }
 .input-bar textarea:focus { border-color:var(--accent); }
@@ -86,7 +89,7 @@ body { display:flex; flex-direction:column; overflow:hidden; height:100vh; heigh
 .input-bar button:disabled { opacity:0.4; cursor:default; }
 
 /* ── Jump-to-latest button (shown when new content arrives while scrolled up) ── */
-.jump-btn { position:fixed; left:50%; transform:translateX(-50%); bottom:calc(112px + var(--safe-bottom)); background:var(--accent); color:#000; border:none; border-radius:16px; padding:7px 16px; font-size:13px; font-weight:600; box-shadow:0 2px 10px rgba(0,0,0,0.5); z-index:50; cursor:pointer; }
+.jump-btn { position:fixed; left:50%; transform:translateX(-50%); bottom:calc(var(--input-area-height) + 8px); background:var(--accent); color:#000; border:none; border-radius:16px; padding:7px 16px; font-size:13px; font-weight:600; box-shadow:0 2px 10px rgba(0,0,0,0.5); z-index:50; cursor:pointer; }
 .jump-btn:active { opacity:0.8; }
 
 /* ── Model bar ── */
@@ -135,6 +138,7 @@ let currentMessages = [];
 let messageRevision = 0;
 let sseSource = null;
 let isRunning = false;
+let runningRevision = 0;
 let streamingMsg = null;
 let streamRenderFrame = null;
 let reconnectSyncTimer = null;
@@ -184,6 +188,7 @@ function renderView(data) {
   const inputArea = document.getElementById("inputArea");
   backBtn.style.display = viewStack.length > 0 ? "" : "none";
   inputArea.style.display = currentView === "chat" ? "" : "none";
+  if (currentView !== "chat") clearUnseen();
 
   switch (currentView) {
     case "login": showLogin(); break;
@@ -204,6 +209,7 @@ function showLogin() {
   document.getElementById("headerStatus").className = "status";
   document.getElementById("backBtn").style.display = "none";
   document.getElementById("inputArea").style.display = "none";
+  clearUnseen();
   document.getElementById("content").innerHTML = `
     <div class="login-wrap">
       <h1>🔗 配对连接</h1>
@@ -352,6 +358,7 @@ async function showChat(sessionId) {
   currentSessionId = sessionId;
   currentMessages = [];
   messageRevision++;
+  runningRevision++;
   streamingMsg = null;
   document.getElementById("headerTitle").textContent = sessionId?.slice(0, 12) ?? "会话";
   document.getElementById("inputArea").style.display = "";
@@ -521,6 +528,11 @@ function messageIdentity(msg) {
   return `${msg.role}:${JSON.stringify(msg.content ?? "")}`;
 }
 
+function historyTailKey(messages) {
+  const last = messages?.[messages.length - 1];
+  return `${messages?.length ?? 0}:${messageIdentity(last)}:${JSON.stringify(last?.content ?? null)}`;
+}
+
 function finalizeMessage(msg) {
   if (!msg) return;
   const key = messageIdentity(msg);
@@ -601,6 +613,7 @@ function handleSSEEvent(event) {
       scheduleReconnectSync();
       break;
     case "agent_start":
+      runningRevision++;
       isRunning = true;
       updateRunningUI();
       break;
@@ -617,6 +630,7 @@ function handleSSEEvent(event) {
       if (event.message) finalizeMessage(event.message);
       break;
     case "agent_end":
+      runningRevision++;
       isRunning = false;
       updateRunningUI();
       removeStreamingMessage();
@@ -636,6 +650,10 @@ function handleSSEEvent(event) {
       break;
     case "error":
       console.error("[SSE]", event.message);
+      if (event.terminal) {
+        closeSSE();
+        setStatus("err");
+      }
       break;
   }
 }
@@ -648,28 +666,37 @@ async function refreshHistory() {
   try {
     const hist = await api(`/sessions/${encodeURIComponent(sessionId)}/history`);
     if (loadId !== viewLoadId || currentView !== "chat" || currentSessionId !== sessionId || revision !== messageRevision) return;
-    currentMessages = hist.messages ?? [];
+    const nextMessages = hist.messages ?? [];
+    const hasNewContent = historyTailKey(nextMessages) !== historyTailKey(currentMessages);
+    currentMessages = nextMessages;
     messageRevision++;
     renderMessages();
     // Snapshot reconciliation must not erase a currently unpersisted stream.
     if (streamingMsg) {
       if (streamRenderFrame == null) streamRenderFrame = requestAnimationFrame(renderStreamingMessage);
     }
-    scrollToBottom();
+    scrollToBottom(false, hasNewContent);
   } catch { /* ignore */ }
 }
 
 async function refreshState() {
-  if (!currentSessionId) return;
+  if (!currentSessionId) return null;
   const sessionId = currentSessionId;
   const loadId = viewLoadId;
+  const revision = runningRevision;
   try {
     const state = await api(`/sessions/${encodeURIComponent(sessionId)}/state`);
-    if (loadId !== viewLoadId || currentView !== "chat" || currentSessionId !== sessionId) return;
-    isRunning = state.running;
-    updateRunningUI();
+    if (loadId !== viewLoadId || currentView !== "chat" || currentSessionId !== sessionId) return null;
+    // Do not let a state request started before a newer SSE transition overwrite
+    // the real-time running state. A subsequent poll will reconcile normally.
+    if (revision === runningRevision) {
+      isRunning = state.running;
+      updateRunningUI();
+    }
     updateContextInfo(state);
-  } catch { /* ignore */ }
+    syncModelSelect(state);
+    return state;
+  } catch { return null; }
 }
 
 // ─── Send / Abort ────────────────────────────────────────────────────
@@ -738,34 +765,61 @@ function autoResize(el) {
 }
 
 // ─── Model selector ──────────────────────────────────────────────────
+function modelValue(provider, modelId) {
+  return JSON.stringify([provider, modelId]);
+}
+
+function syncModelSelect(state) {
+  const sel = document.getElementById("modelSelect");
+  const currentModel = state?.state?.model ?? state?.model;
+  if (!sel || !currentModel) return;
+  const option = Array.from(sel.options).find((o) =>
+    o.dataset.provider === currentModel.provider && o.dataset.modelId === currentModel.id);
+  if (!option) return;
+  sel.value = option.value;
+  sel.dataset.currentValue = option.value;
+}
+
 function populateModelSelect(modelsData, state) {
   const sel = document.getElementById("modelSelect");
   if (!sel) return;
-  const currentModel = state?.state?.model ?? state?.model;
   // Build options via DOM: assigning .value/.textContent is not HTML parsing,
-  // so provider/id containing quotes or angle brackets can't break out (P1-1).
+  // and provider/model are kept in separate dataset fields so IDs containing
+  // ':' are lossless.
   sel.innerHTML = "";
   for (const m of (modelsData.models ?? [])) {
     const opt = document.createElement("option");
-    opt.value = `${m.provider}:${m.id}`;
+    opt.value = modelValue(m.provider, m.id);
+    opt.dataset.provider = m.provider;
+    opt.dataset.modelId = m.id;
     opt.textContent = m.name || m.id;
-    if (currentModel && m.provider === currentModel.provider && m.id === currentModel.id) opt.selected = true;
     sel.appendChild(opt);
   }
+  syncModelSelect(state);
 }
 
 async function onModelChange() {
   const sel = document.getElementById("modelSelect");
   if (!sel || !currentSessionId) return;
-  const [provider, modelId] = sel.value.split(":");
+  const option = sel.selectedOptions[0];
+  const provider = option?.dataset.provider;
+  const modelId = option?.dataset.modelId;
   if (!provider || !modelId) return;
+  const prior = sel.dataset.currentValue ?? "";
+  sel.disabled = true;
   try {
     await api(`/sessions/${encodeURIComponent(currentSessionId)}/model`, {
       method: "POST",
       body: JSON.stringify({ provider, modelId }),
     });
+    sel.dataset.currentValue = sel.value;
+    await refreshState();
   } catch (e) {
+    if (prior) sel.value = prior;
+    alert("模型切换失败: " + e.message);
     console.error("model switch failed:", e);
+  } finally {
+    sel.disabled = false;
   }
 }
 
@@ -808,11 +862,11 @@ function isNearBottom() {
   return c.scrollHeight - c.scrollTop - c.clientHeight < STICK_THRESHOLD;
 }
 
-function scrollToBottom(force = false) {
+function scrollToBottom(force = false, markNew = true) {
   const c = document.getElementById("content");
   if (!c) return;
   if (!force && !stickToBottom) {
-    markUnseen(); // user is reading up — don't grab, just flag new content below
+    if (markNew) markUnseen(); // don't grab the reader; only flag real new content
     return;
   }
   requestAnimationFrame(() => { c.scrollTop = c.scrollHeight; });
@@ -867,21 +921,37 @@ function timeAgo(iso) {
 // visible while typing.
 function setupViewportHandling() {
   const vv = window.visualViewport;
-  if (vv) {
-    vv.addEventListener("resize", () => {
-      const msgInput = document.getElementById("msgInput");
-      // Only snap to bottom while the user is actually typing (input focused),
-      // so reading history isn't interrupted by unrelated viewport changes.
-      if (currentView === "chat" && msgInput && document.activeElement === msgInput) {
-        requestAnimationFrame(() => scrollToBottom(true));
-      }
-    });
+  const inputArea = document.getElementById("inputArea");
+  const syncViewportMetrics = () => {
+    // Android browser chrome and keyboards do not report 100vh/100dvh
+    // consistently. visualViewport.height is the actually visible CSS-pixel
+    // height, so use it as the final layout authority when available.
+    const height = Math.round(vv?.height ?? window.innerHeight);
+    if (height > 0) document.documentElement.style.setProperty("--app-height", `${height}px`);
+    if (inputArea && inputArea.offsetHeight > 0) {
+      document.documentElement.style.setProperty("--input-area-height", `${inputArea.offsetHeight}px`);
+    }
+  };
+  syncViewportMetrics();
+  vv?.addEventListener("resize", () => {
+    syncViewportMetrics();
+    const msgInput = document.getElementById("msgInput");
+    // Respect an intentional upward scroll even when the keyboard resizes the
+    // viewport. Auto-follow continues only if the reader was already at bottom.
+    if (currentView === "chat" && msgInput && document.activeElement === msgInput) {
+      requestAnimationFrame(() => scrollToBottom());
+    }
+  });
+  window.addEventListener("resize", syncViewportMetrics);
+  if (inputArea && "ResizeObserver" in window) {
+    new ResizeObserver(syncViewportMetrics).observe(inputArea);
   }
   const msgInput = document.getElementById("msgInput");
   if (msgInput) {
     msgInput.addEventListener("focus", () => {
-      // Give the keyboard animation a moment, then reveal the latest message.
-      setTimeout(() => { if (currentView === "chat") { stickToBottom = true; clearUnseen(); scrollToBottom(true); } }, 300);
+      // Give the keyboard animation a moment, but never yank a reader who has
+      // intentionally scrolled upward.
+      setTimeout(() => { if (currentView === "chat") scrollToBottom(); }, 300);
     });
   }
 }
@@ -907,9 +977,9 @@ function setupTapOutside() {
   // PWA_VERSION must match VERSION in sw.js; bump BOTH on every deploy.
   // When a newly-activated SW announces a different version, the page reloads
   // itself once — so users get updates without ever clearing cache.
-  const PWA_VERSION = "pi-mobile-v4";
+  const PWA_VERSION = "pi-mobile-v5";
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("/mobile/sw.js").then((reg) => {
+    navigator.serviceWorker.register("/mobile/sw.js", { updateViaCache: "none" }).then((reg) => {
       navigator.serviceWorker.addEventListener("message", (e) => {
         const d = e.data;
         if (d && d.type === "sw-version" && d.version && d.version !== PWA_VERSION) {
@@ -929,6 +999,7 @@ function setupTapOutside() {
       // Check for updates when the app becomes visible and every few minutes,
       // instead of waiting for the browser's 24h default SW update check.
       const checkUpdate = () => reg.update().catch(() => {});
+      checkUpdate(); // do not wait for visibilitychange or the five-minute timer
       document.addEventListener("visibilitychange", () => {
         if (document.visibilityState === "visible") checkUpdate();
       });

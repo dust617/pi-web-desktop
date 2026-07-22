@@ -10,15 +10,17 @@
 //     reloads once if they differ — picking up the new shell automatically.
 //
 // API/auth/SSE are never intercepted. Offline launch still works from cache.
-const VERSION = "pi-mobile-v4";
+const VERSION = "pi-mobile-v5";
 const CACHE_NAME = VERSION;
 const SHELL_URLS = ["/mobile/", "/mobile/index.html", "/mobile/manifest.json"];
 
 self.addEventListener("install", (event) => {
   // Activate immediately instead of waiting for old tabs/pages to close.
   self.skipWaiting();
+  // Do not swallow pre-cache failures: if any shell request fails, installation
+  // must fail so the previous working worker/cache remains intact.
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_URLS).catch(() => {}))
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_URLS))
   );
 });
 
@@ -42,7 +44,7 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("message", (event) => {
   // A page can ask which version is active (e.g. right after load).
-  if (event.data === "get-version") {
+  if (event.data === "get-version" && event.source?.postMessage) {
     event.source.postMessage({ type: "sw-version", version: VERSION });
   }
 });

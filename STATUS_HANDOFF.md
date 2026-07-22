@@ -238,3 +238,31 @@ HTTPS(mobile.tt56677.top/mobile/): 000  ← 由上一行决定, 预期
 - 新增回归：`mobile/tests/pwa-stream.test.mjs` 8/8（含同 session history/message_end 并发竞态）；BFF 状态矩阵 30/30；TypeScript、PWA/SW 语法和 diff check 均通过。
 - 本机 `~/.pi/agent/models.json` 的 `qwen3.8-max-preview` 原误配为 128K/16K；已按阿里云官方精确值改为 context `983616`、max output `131072`。Pi CLI 已显示 `983.6K / 131.1K`。现有已加载会话需重新选择该模型或重启后才能拿到新元数据。
 - 注意：更大窗口解决的是错误的提前压缩/128K 显示，不会消除模型推理、网络或超长 prompt 本身的延迟；保留自动压缩与余量仍是正确做法。
+
+---
+
+## 2026-07-23 更新：移动端 v5 全链路复检
+
+### 真机体验修复
+- 输入区使用不可收缩 flex item，聊天滚动区 `min-height:0`；以 `visualViewport.height` 作为手机实际可视高度，解决地址栏/键盘导致输入框底部裁切。
+- 智能滚动只在用户位于底部时跟随；上翻阅读不再被流式输出拽回。新消息按钮跟随输入区动态高度，手动回到底部/点击按钮恢复跟随。
+- 相同 history 对账不再误报新消息；离开聊天页会清理提示。旧 state poll 不会覆盖更新的 SSE running 状态。
+- 模型选择按服务端 state 权威对账，支持包含 `:` 的模型 ID；切换失败恢复旧选项并提示，桌面/其他客户端切模型也会同步到手机。
+
+### PWA 更新与安全
+- PWA/SW 版本为 `pi-mobile-v5`；注册时 `updateViaCache:none` 且立即 `reg.update()`，不再等 5 分钟或 24 小时。
+- SW 预缓存失败会拒绝安装并保留旧工作版本，不再误删可用离线缓存。
+- HTTP `/mobile/auth/revoke-all` 已删除，配对码/全量吊销仅允许 Electron 托盘进程内操作。
+- 畸形 cookie 返回 401；SSE 每 20 秒重验登录状态，过期/吊销即关闭；上游 401/404 停止自动重连。
+
+### 验证与交付
+- 当前会话模型真实状态：`openai-codex/gpt-5.6-sol`、thinking high。
+- 自动测试：BFF 32/32、PWA 12/12、SW/layout 4/4、package parity 6/6；TypeScript/语法/diff 全过。
+- 公网验证：shell/health/login/state/models/SSE 通过；Secure 7 天 cookie；secret routes 404；malformed cookie 401；公网 SW=v5。
+- 新 release 已重新构建；ASAR 内 bridge/main/PWA/SW/manifest 与当前工作树逐字节一致，不再包含旧 pairing-code/revoke-all 路由。
+- 当前 standalone BFF 配对码：`812464`；已有持久化 cookie 不因本次重启失效。
+
+### 未阻塞但待加固
+- 当前公网运行仍是 DEV-only standalone，session token 文件位于项目根目录；生产使用应切回集成 Electron 的 per-user userData 存储。
+- cloudflared 后登录限流共享 loopback bucket；watchdog 仍按 image name 重启 cloudflared，且只监督隧道、不监督 BFF。
+- 公网可用性继续依赖路由器/本机代理对 `argotunnel.com` 的可用转发路径。

@@ -104,6 +104,9 @@ async function main() {
   let r = await req(P, "GET", "/mobile/api/v1/projects");
   check("T1 unauth GET /projects -> 401", r.status === 401);
 
+  r = await req(P, "GET", "/mobile/api/v1/projects", { headers: { Cookie: "mb_session=%ZZ" } });
+  check("T1 malformed cookie -> 401, never public 500", r.status === 401, "got " + r.status + " " + r.text().slice(0, 100));
+
   r = await req(P, "GET", "/mobile/auth/pairing-code");
   check("T2 GET /auth/pairing-code -> 404 (P0-1)", r.status === 404);
 
@@ -178,6 +181,9 @@ async function main() {
   const sse = await sseConnected(P, cookie);
   check("T17 SSE 200 + event-stream", sse.status === 200 && /event-stream/.test(sse.ct), JSON.stringify(sse).slice(0, 120));
   check("T17 SSE emits connected event", sse.connected, sse.raw || "");
+
+  r = await req(P, "POST", "/mobile/auth/revoke-all", { headers: { Cookie: cookie, Origin: ORIGIN_OK }, body: {} });
+  check("T17 revoke-all has no HTTP route or pairing-code response", r.status === 404 && !r.text().includes("newCode"), "got " + r.status + " " + r.text().slice(0, 100));
 
   r = await req(P, "POST", "/mobile/auth/logout", { headers: { Cookie: cookie, Origin: ORIGIN_OK } });
   check("T18 logout -> 200", r.status === 200);

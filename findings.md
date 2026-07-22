@@ -62,3 +62,18 @@
 - 阿里云官方 OpenCode/Kilo CLI/OpenClaw 配置对精确模型 `qwen3.8-max-preview` 给出 `contextWindow=983616`、最大输出 `131072`；无需额外长上下文参数。
 - 本机 `~/.pi/agent/models.json` 原来显式写成 `128000/16384`，Pi 因而显示 128K，并按这个错误窗口提前触发压缩；已修为官方精确值。现有运行会话需重新选择模型或重启后才会拿到新 Model 对象。
 - 官方来源：<https://help.aliyun.com/zh/model-studio/opencode>、<https://help.aliyun.com/zh/model-studio/kilo-cli>、<https://help.aliyun.com/zh/model-studio/openclaw>。
+
+## 2026-07-23 移动端全链路复检（已完成）
+
+- 当前会话真实运行模型已核对为 `openai-codex/gpt-5.6-sol`、thinking `high`；手机模型切换 POST 返回 200，pi-web state 同步显示该模型，确认不是只改下拉框。
+- 初始回归通过：TypeScript、BFF 30/30、PWA 流式 reducer 8/8、HTML/SW 语法；最终修复后扩展为 BFF 32/32、PWA 12/12、SW/layout 4/4。
+- 公网最终验收通过：shell/health/login/session-state/models/SSE 均正常；PWA 为 v5；Secure 7 天 cookie 正确；pairing-code 与 revoke-all HTTP 路由均 404；畸形 cookie 返回 401 而非 500。
+- Tunnel watchdog 状态为 public HTTPS 200，cloudflared 单实例；近期 `context canceled`/`http2 stream closed` 与客户端主动结束 SSE/超时相符，BFF 无 fatal/runtime error。
+- 公网 HTML/SW 使用 `no-store` 且 Cloudflare DYNAMIC/BYPASS；自动更新增加启动时立即 `reg.update()` 与 `updateViaCache:none`。SW 新版本预缓存若失败会拒绝安装，保留旧工作缓存。
+- 输入区改为不可收缩 flex item，滚动区增加 `min-height:0`，并以 `visualViewport.height` 驱动实际可见高度；“↓ 新消息”按钮位置跟随输入区动态高度。键盘 resize/focus 也不再强制夺走用户上翻位置。
+- 模型下拉框现按服务端 state 权威对账，支持包含冒号的 model ID；切换失败会恢复旧选项并给用户可见提示，桌面端/另一客户端切模型也能同步到手机。
+- 修复相同 history 对账误报“新消息”、提示按钮泄漏到非聊天页面、旧 state poll 覆盖新 SSE running 状态。
+- SSE 每 20 秒重新校验移动会话，过期/吊销后关闭；上游 401/404 标记 terminal，PWA 停止无意义重连。
+- 旧 release 安装包经 ASAR 检查确认包含 pre-fix pairing-code 漏洞；已从当前 HEAD 重新打包，package parity 6/6，bridge/main/PWA/SW/manifest 与工作树逐字节一致。
+- 剩余基础设施风险：DEV-only standalone 仍把登录状态存在项目根目录明文文件；login 限流在 cloudflared 后共享 loopback bucket；watchdog 仍按进程名全局重启 cloudflared 且不监督 BFF。这些不阻塞当前手机体验，但应在切回集成 Electron 生产路径时加固。
+- SSE 当前会收到 MobileBridge 与上游各一条 connected；PWA 已 100ms debounce 对账，正确但存在低优先级冗余。
