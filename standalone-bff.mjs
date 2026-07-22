@@ -2,6 +2,8 @@
 // so we do NOT spawn a second runtime and do NOT disturb the live Electron session.
 import { createRequire } from "node:module";
 import { writeFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 const { MobileBridge, resolveAllowedOrigins } = require("./dist/mobile-bridge.js");
@@ -27,6 +29,7 @@ const bridge = new MobileBridge({
   runtime: fakeRuntime,
   port: PORT,
   allowedOrigins,
+  sessionStorePath: path.join(path.dirname(fileURLToPath(import.meta.url)), "bff-sessions.json"),
 });
 
 console.log("[standalone-bff] *** DEV-ONLY standalone BFF (not the packaged Electron path) ***");

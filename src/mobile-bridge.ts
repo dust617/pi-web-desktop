@@ -31,6 +31,8 @@ export interface MobileBridgeConfig {
   runtime: PiWebRuntime;
   /** Allowed origins for mutation requests (e.g. ["https://mobile.tt56677.top"]). */
   allowedOrigins?: string[];
+  /** File path to persist mobile login sessions (survives BFF restart). */
+  sessionStorePath?: string;
 }
 
 /** Built-in public origin for this project's tunnel hostname. */
@@ -70,6 +72,7 @@ export function resolveAllowedOrigins(env: NodeJS.ProcessEnv = process.env): str
 interface AuthSession {
   id: string;
   createdAt: number;
+  expiresAt: number;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────
@@ -150,12 +153,41 @@ function matchRoute(pattern: string, pathname: string): Record<string, string> |
 // ─── Auth Manager ────────────────────────────────────────────────────
 
 class AuthManager {
+  /** Session lifetime: 7 days, matching the mb_session cookie Max-Age. */
+  private static readonly TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
   private pairingCode: string;
   private sessions = new Map<string, AuthSession>();
   private loginAttempts = new Map<string, { count: number; resetAt: number }>();
+  private storePath: string | null;
 
-  constructor() {
+  constructor(storePath?: string) {
+    this.storePath = storePath || null;
     this.pairingCode = this.generateCode();
+    this.load();
+  }
+
+  /** Load persisted sessions (survives BFF restart so phones stay logged in). */
+  private load(): void {
+    if (!this.storePath) return;
+    try {
+      const data = JSON.parse(fs.readFileSync(this.storePath, "utf8"));
+      const now = Date.now();
+      for (const s of (data.sessions ?? [])) {
+        if (s && s.id && typeof s.expiresAt === "number" && s.expiresAt > now) {
+          this.sessions.set(s.id, { id: s.id, createdAt: s.createdAt ?? now, expiresAt: s.expiresAt });
+        }
+      }
+    } catch { /* no store yet */ }
+  }
+
+  /** Persist sessions to disk (best effort). */
+  private persist(): void {
+    if (!this.storePath) return;
+    try {
+      const data = { sessions: [...this.sessions.values()] };
+      fs.writeFileSync(this.storePath, JSON.stringify(data), "utf8");
+    } catch { /* best effort */ }
   }
 
   get code(): string {
@@ -183,25 +215,36 @@ class AuthManager {
   login(code: string): string | null {
     if (code !== this.pairingCode) return null;
     const sessionId = crypto.randomUUID();
-    this.sessions.set(sessionId, { id: sessionId, createdAt: Date.now() });
+    const now = Date.now();
+    this.sessions.set(sessionId, { id: sessionId, createdAt: now, expiresAt: now + AuthManager.TTL_MS });
+    this.persist();
     return sessionId;
   }
 
-  /** Validate session cookie. */
+  /** Validate session cookie (rejects expired sessions). */
   validate(sessionId: string | undefined): boolean {
     if (!sessionId) return false;
-    return this.sessions.has(sessionId);
+    const s = this.sessions.get(sessionId);
+    if (!s) return false;
+    if (s.expiresAt <= Date.now()) {
+      this.sessions.delete(sessionId);
+      this.persist();
+      return false;
+    }
+    return true;
   }
 
   /** Destroy a session. */
   logout(sessionId: string): void {
     this.sessions.delete(sessionId);
+    this.persist();
   }
 
   /** Destroy all sessions and regenerate pairing code. */
   revokeAll(): void {
     this.sessions.clear();
     this.pairingCode = this.generateCode();
+    this.persist();
   }
 
   get activeSessionCount(): number {
@@ -218,7 +261,7 @@ class AuthManager {
 
 export class MobileBridge {
   private server: http.Server | null = null;
-  private readonly auth = new AuthManager();
+  private auth: AuthManager;
   private readonly config: Required<MobileBridgeConfig>;
   private readonly activeSSE = new Set<http.ServerResponse>();
 
@@ -228,7 +271,9 @@ export class MobileBridge {
       staticDir: config.staticDir ?? path.join(__dirname, "..", "resources", "mobile"),
       runtime: config.runtime,
       allowedOrigins: config.allowedOrigins ?? [],
+      sessionStorePath: config.sessionStorePath ?? "",
     };
+    this.auth = new AuthManager(this.config.sessionStorePath);
   }
 
   get pairingCode(): string {
@@ -308,6 +353,17 @@ export class MobileBridge {
       const pathname = url.pathname;
       const method = (req.method ?? "GET").toUpperCase();
 
+      // Diagnostic access log (temporary): capture origin + status for every
+      // request so mobile send-failures can be traced to the exact response code.
+      if (pathname.startsWith("/mobile/api/") || pathname.startsWith("/mobile/auth/")) {
+        const _start = Date.now();
+        const _origin = req.headers.origin ?? "-";
+        const _cookie = req.headers.cookie ? "cookie" : "nocookie";
+        res.on("finish", () => {
+          console.log(`[req] ${method} ${pathname} origin=${_origin} ${_cookie} -> ${res.statusCode} (${Date.now() - _start}ms)`);
+        });
+      }
+
       // CORS preflight
       if (method === "OPTIONS") {
         res.writeHead(204, {
@@ -382,8 +438,23 @@ export class MobileBridge {
     if (!origin) return false;
     // Always allow loopback
     if (/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) return true;
-    // Allow configured origins (tunnel domains)
-    return this.config.allowedOrigins.some((o) => origin === o);
+    // Match configured origins by host, accepting both http and https schemes so
+    // the Cloudflare front-end works whether the phone loads http:// or https://.
+    // CSRF protection still holds: an attacker's site has a different host and is
+    // rejected regardless of scheme.
+    let host: string;
+    try {
+      host = new URL(origin).host;
+    } catch {
+      return false;
+    }
+    return this.config.allowedOrigins.some((o) => {
+      try {
+        return new URL(o).host === host;
+      } catch {
+        return false;
+      }
+    });
   }
 
   /**
@@ -629,16 +700,23 @@ export class MobileBridge {
 
       const filtered = sessions
         .filter((s) => (s.cwd ?? "unknown") === projectId)
-        .map((s) => ({
-          sessionId: s.id,
-          projectId,
-          name: s.name ?? null,
-          preview: s.preview ?? "",
-          messageCount: s.messageCount ?? 0,
-          created: s.created ?? "",
-          modified: s.modified ?? "",
-          running: runningIds.has(s.id),
-        }))
+        .map((s) => {
+          // pi-web exposes the session's first user message as `firstMessage`;
+          // use it as the human-readable title (truncated), falling back to null
+          // so the client shows the session id prefix.
+          const first = typeof s.firstMessage === "string" ? s.firstMessage.trim() : "";
+          const title = first ? (first.length > 48 ? first.slice(0, 48) + "…" : first) : null;
+          return {
+            sessionId: s.id,
+            projectId,
+            name: title,
+            preview: first ? (first.length > 100 ? first.slice(0, 100) + "…" : first) : "",
+            messageCount: s.messageCount ?? 0,
+            created: s.created ?? "",
+            modified: s.modified ?? "",
+            running: runningIds.has(s.id),
+          };
+        })
         .sort((a, b) => (b.modified ?? "").localeCompare(a.modified ?? ""));
 
       if (filtered.length === 0 && !sessions.some((s) => (s.cwd ?? "unknown") === projectId)) {

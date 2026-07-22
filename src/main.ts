@@ -686,7 +686,11 @@ if (!gotLock) {
     void ensureWindow().then(async () => {
       // Start MobileBridge after window is ready (needs runtime.info)
       try {
-        mobileBridge = new MobileBridge({ runtime, allowedOrigins: resolveAllowedOrigins() });
+        mobileBridge = new MobileBridge({
+          runtime,
+          allowedOrigins: resolveAllowedOrigins(),
+          sessionStorePath: path.join(app.getPath("userData"), "mobile-sessions.json"),
+        });
         const bridgePort = await mobileBridge.start();
         console.log(`[main] MobileBridge started on port ${bridgePort}, code: ${mobileBridge.pairingCode}`);
         createTray(); // refresh tray with pairing code

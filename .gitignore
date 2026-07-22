@@ -21,6 +21,7 @@ Desktop.ini
 
 # Mobile runtime state / secrets (never commit)
 bff-pairing-code.txt
+bff-sessions.json
 *-status.json
 .ns-watchdog.lock/
 
