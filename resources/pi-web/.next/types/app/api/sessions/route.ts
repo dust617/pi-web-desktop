@@ -1,4 +1,4 @@
-// File: /Users/alex/Documents/Workspace/pi-web/app/api/sessions/route.ts
+// File: D:\PI-web-desktop\resources\pi-web\app\api\sessions\route.ts
 import * as entry from '../../../../../app/api/sessions/route.js'
 import type { NextRequest } from 'next/server.js'
 

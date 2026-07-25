@@ -1,4 +1,4 @@
-// File: /Users/alex/Documents/Workspace/pi-web/app/api/default-cwd/route.ts
+// File: D:\PI-web-desktop\resources\pi-web\app\api\default-cwd\route.ts
 import * as entry from '../../../../../app/api/default-cwd/route.js'
 import type { NextRequest } from 'next/server.js'
 

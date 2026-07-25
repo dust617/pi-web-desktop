@@ -25,9 +25,12 @@ const fakeRuntime = {
 // Single source of truth shared with the Electron integration (P0-2).
 const allowedOrigins = resolveAllowedOrigins();
 
+const BIND = process.env.BFF_BIND || "127.0.0.1";
+
 const bridge = new MobileBridge({
   runtime: fakeRuntime,
   port: PORT,
+  bindHost: BIND,
   allowedOrigins,
   sessionStorePath: path.join(path.dirname(fileURLToPath(import.meta.url)), "bff-sessions.json"),
 });
@@ -40,11 +43,10 @@ bridge
   .start()
   .then((port) => {
     const code = bridge.pairingCode;
-    console.log(`[standalone-bff] listening on 127.0.0.1:${port}`);
-    console.log(`[standalone-bff] pairing code: ${code}`);
+    console.log(`[standalone-bff] listening on ${BIND}:${port}`);
     writeFileSync(
       "D:/PI-web-desktop/bff-pairing-code.txt",
-      `port=${port}\ncode=${code}\nurl=https://mobile.tt56677.top/mobile/\n`
+      `port=${port}\ncode=${code}\nurl=https://pi.tt56677.top:8443/mobile/\n`
     );
   })
   .catch((err) => {

@@ -1,0 +1,1 @@
+globalThis.__RSC_MANIFEST=(globalThis.__RSC_MANIFEST||{});globalThis.__RSC_MANIFEST["/api/sessions/[id]/auto-name/route"]={"moduleLoading":{"prefix":"/_next/"},"ssrModuleMapping":{},"edgeSSRModuleMapping":{},"clientModules":{},"entryCSSFiles":{"D:\\PI-web-desktop\\resources\\pi-web\\app\\api\\sessions\\[id]\\auto-name\\route":[]},"rscModuleMapping":{},"edgeRscModuleMapping":{}};

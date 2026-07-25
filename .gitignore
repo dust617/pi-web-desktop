@@ -14,6 +14,14 @@ dist/
 .pi-subagents/
 nul
 
+# Local Pi operational memory and cold exports (never commit)
+.pi/memory/
+.pi/session-audit/
+archive/
+/STATUS.md
+/KEYSTORE.md
+session-exports/
+
 # OS
 Thumbs.db
 Desktop.ini
@@ -32,3 +40,10 @@ release/
 
 # Downloaded deploy-time binaries (fetch separately, not vendored)
 resources/cloudflared/
+
+# Unrelated local subproject (own .git) + runtime tunnel url (never commit)
+goofish-mcp-server/
+.lhr-url.txt
+
+# Sensitive infra/ops docs (VPS IP, Xray/frp config, vendor IDs) - NEVER commit
+mobile/vps-relay/

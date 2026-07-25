@@ -18,6 +18,8 @@ import * as http from "http";
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
+import * as net from "net";
+import { StringDecoder } from "string_decoder";
 import type { PiWebRuntime } from "./pi-web-runtime";
 
 // ─── Types ───────────────────────────────────────────────────────────
@@ -29,14 +31,16 @@ export interface MobileBridgeConfig {
   staticDir?: string;
   /** Reference to the PiWebRuntime for dynamic port discovery. */
   runtime: PiWebRuntime;
-  /** Allowed origins for mutation requests (e.g. ["https://mobile.tt56677.top"]). */
+  /** Allowed origins for mutation requests (e.g. ["https://pi.tt56677.top:8443"]). */
   allowedOrigins?: string[];
+  /** Bind address (default 127.0.0.1). Set to "0.0.0.0" for LAN/IPv6 port-forward. */
+  bindHost?: string;
   /** File path to persist mobile login sessions (survives BFF restart). */
   sessionStorePath?: string;
 }
 
 /** Built-in public origin for this project's tunnel hostname. */
-export const DEFAULT_MOBILE_ORIGIN = "https://mobile.tt56677.top";
+export const DEFAULT_MOBILE_ORIGIN = "https://pi.tt56677.top:8443";
 
 /**
  * Single source of truth for the public PWA origin, shared by the Electron
@@ -157,6 +161,112 @@ function matchRoute(pattern: string, pathname: string): Record<string, string> |
   return params;
 }
 
+const MOBILE_THINKING_CHARS = 200;
+const MOBILE_TOOL_ARGS_CHARS = 300;
+const MOBILE_TOOL_RESULT_CHARS = 800;
+const MOBILE_ASSISTANT_TEXT_CHARS = 64_000;
+const MOBILE_HISTORY_MESSAGES = 120;
+
+function capMobileText(value: string, limit: number, suffix = "…"): { text: string; truncated: boolean } {
+  if (value.length <= limit) return { text: value, truncated: false };
+  return { text: value.slice(0, limit) + suffix, truncated: true };
+}
+
+/** Remove fields the mobile renderer never uses and bound folded/hidden bodies. */
+export function slimMobileMessage(message: any): any {
+  if (!message || typeof message !== "object") return message;
+  const role = typeof message.role === "string" ? message.role : "system";
+  let messageTruncated = false;
+  const slimBlock = (block: any): any => {
+    if (!block || typeof block !== "object") return block;
+    const type = block.type;
+    if (type === "thinking") {
+      const raw = typeof block.thinking === "string" ? block.thinking : typeof block.text === "string" ? block.text : "";
+      const { text, truncated } = capMobileText(raw, MOBILE_THINKING_CHARS);
+      messageTruncated ||= truncated;
+      return { type: "thinking", thinking: text, ...(block.deferred ? { deferred: true } : {}), ...(block.redacted ? { redacted: true } : {}), ...(truncated ? { truncated: true, originalLength: raw.length } : {}) };
+    }
+    if (type === "text") {
+      const raw = typeof block.text === "string" ? block.text : "";
+      const limit = role === "toolResult" ? MOBILE_TOOL_RESULT_CHARS : role === "assistant" ? MOBILE_ASSISTANT_TEXT_CHARS : role === "user" ? 64 * 1024 : 500;
+      const { text, truncated } = capMobileText(raw, limit, "…\n[移动端已截断，完整内容请在桌面端查看]");
+      messageTruncated ||= truncated;
+      return { type: "text", text, ...(truncated ? { truncated: true, originalLength: raw.length } : {}) };
+    }
+    if (type === "toolCall" || type === "tool_use") {
+      const args = block.arguments ?? block.input;
+      const raw = typeof args === "string" ? args : args ? JSON.stringify(args) : "";
+      const { text, truncated } = capMobileText(raw, MOBILE_TOOL_ARGS_CHARS);
+      messageTruncated ||= truncated;
+      return { type: "toolCall", id: block.id, name: block.name ?? block.toolName ?? "tool", arguments: text, ...(truncated ? { truncated: true, originalLength: raw.length } : {}) };
+    }
+    if (type === "toolResult" || type === "tool_result") {
+      const raw = typeof block.content === "string" ? block.content : JSON.stringify(block.content ?? "");
+      const { text, truncated } = capMobileText(raw, MOBILE_TOOL_RESULT_CHARS);
+      messageTruncated ||= truncated;
+      return { type: "toolResult", content: text, ...(truncated ? { truncated: true, originalLength: raw.length } : {}) };
+    }
+    if (type === "image") {
+      messageTruncated = true;
+      return { type: "text", text: "[媒体内容已省略，请在桌面端查看]", truncated: true };
+    }
+    return { type: typeof type === "string" ? type : "unknown" };
+  };
+
+  let content: any = message.content;
+  if (typeof content === "string") {
+    const limit = role === "toolResult" ? MOBILE_TOOL_RESULT_CHARS : role === "assistant" ? MOBILE_ASSISTANT_TEXT_CHARS : role === "user" ? 64 * 1024 : 500;
+    const capped = capMobileText(content, limit, "…\n[移动端已截断，完整内容请在桌面端查看]");
+    content = capped.text;
+    messageTruncated ||= capped.truncated;
+  } else if (Array.isArray(content)) {
+    content = content.map(slimBlock);
+  }
+
+  return {
+    role,
+    content,
+    ...(message.timestamp != null ? { timestamp: message.timestamp } : {}),
+    ...(typeof message.toolName === "string" ? { toolName: message.toolName } : {}),
+    ...(message.isError ? { isError: true } : {}),
+    ...(messageTruncated ? { truncated: true } : {}),
+  };
+}
+
+/** Convert cumulative desktop agent snapshots into a compact mobile delta DTO. */
+export function optimizeMobileSSEEvent(event: any): any | null {
+  if (!event || typeof event !== "object") return null;
+  const type = event.type;
+  if (type === "tool_execution_start" || type === "tool_execution_update" || type === "tool_execution_end" || type === "turn_start" || type === "turn_end") {
+    return null; // mobile already shows tool-call progress from assistant deltas
+  }
+  if (type === "message_start" || type === "message_end") {
+    return { type, message: slimMobileMessage(event.message) };
+  }
+  if (type === "message_update") {
+    const source = event.assistantMessageEvent;
+    if (!source || typeof source !== "object") {
+      return event.message ? { type, message: slimMobileMessage(event.message) } : null;
+    }
+    const deltaType = String(source.type ?? "");
+    if (deltaType.startsWith("toolcall_")) return null; // final bounded call arrives via message_end
+    const compact: any = {
+      type: deltaType,
+      contentIndex: Number.isInteger(source.contentIndex) ? source.contentIndex : 0,
+    };
+    if (typeof source.delta === "string") {
+      const limit = deltaType === "thinking_delta" ? 256 : 4096;
+      compact.delta = source.delta.slice(0, limit);
+    }
+    return { type, assistantMessageEvent: compact };
+  }
+  if (type === "connected" || type === "agent_start" || type === "agent_end") return { type };
+  if (type === "model_select") return { type, model: event.model };
+  if (type === "thinking_level_select") return { type, level: event.level };
+  if (type === "error") return { type, code: event.code, terminal: !!event.terminal, message: String(event.message ?? "Agent stream error").slice(0, 500) };
+  return null;
+}
+
 // ─── Auth Manager ────────────────────────────────────────────────────
 
 class AuthManager {
@@ -226,7 +336,7 @@ class AuthManager {
     return this.pairingCode;
   }
 
-  /** Check rate limit (5 attempts per minute per IP). Returns true if allowed. */
+  /** Check rate limit (5 failed attempts per minute per client IP). */
   checkRateLimit(ip: string): boolean {
     const now = Date.now();
     const entry = this.loginAttempts.get(ip);
@@ -236,6 +346,10 @@ class AuthManager {
     }
     entry.count++;
     return entry.count <= 5;
+  }
+
+  clearRateLimit(ip: string): void {
+    this.loginAttempts.delete(ip);
   }
 
   /** Validate pairing code and create session. Returns cookie value or null. */
@@ -293,6 +407,7 @@ export class MobileBridge {
   private auth: AuthManager;
   private readonly config: Required<MobileBridgeConfig>;
   private readonly activeSSE = new Set<http.ServerResponse>();
+  private readonly activeSSEBySession = new Map<string, number>();
 
   constructor(config: MobileBridgeConfig) {
     this.config = {
@@ -301,6 +416,7 @@ export class MobileBridge {
       runtime: config.runtime,
       allowedOrigins: config.allowedOrigins ?? [],
       sessionStorePath: config.sessionStorePath ?? "",
+      bindHost: config.bindHost ?? "127.0.0.1",
     };
     this.auth = new AuthManager(this.config.sessionStorePath);
   }
@@ -320,6 +436,7 @@ export class MobileBridge {
       try { sse.end(); } catch { /* ignore */ }
     }
     this.activeSSE.clear();
+    this.activeSSEBySession.clear();
     return this.auth.code;
   }
 
@@ -347,10 +464,10 @@ export class MobileBridge {
           reject(err);
         }
       });
-      srv.listen(this.config.port, "127.0.0.1", () => {
+      const bind = this.config.bindHost ?? "127.0.0.1";
+      srv.listen(this.config.port, bind, () => {
         this.server = srv;
-        console.log(`[mobile-bridge] listening on 127.0.0.1:${this.config.port}`);
-        console.log(`[mobile-bridge] pairing code: ${this.auth.code}`);
+        console.log(`[mobile-bridge] listening on ${bind}:${this.config.port}`);
         resolve(this.config.port);
       });
     });
@@ -362,6 +479,7 @@ export class MobileBridge {
       try { res.end(); } catch { /* ignore */ }
     }
     this.activeSSE.clear();
+    this.activeSSEBySession.clear();
 
     if (!this.server) return;
     const srv = this.server;
@@ -382,14 +500,18 @@ export class MobileBridge {
       const pathname = url.pathname;
       const method = (req.method ?? "GET").toUpperCase();
 
-      // Diagnostic access log (temporary): capture origin + status for every
-      // request so mobile send-failures can be traced to the exact response code.
+      // Keep the 5-second state/list polling path quiet. Log only failures,
+      // slow requests, or an explicitly enabled diagnostic session.
       if (pathname.startsWith("/mobile/api/") || pathname.startsWith("/mobile/auth/")) {
-        const _start = Date.now();
-        const _origin = req.headers.origin ?? "-";
-        const _cookie = req.headers.cookie ? "cookie" : "nocookie";
+        const requestStartedAt = Date.now();
+        const debugRequests = process.env.PI_MOBILE_DEBUG_REQUESTS === "1";
         res.on("finish", () => {
-          console.log(`[req] ${method} ${pathname} origin=${_origin} ${_cookie} -> ${res.statusCode} (${Date.now() - _start}ms)`);
+          const elapsed = Date.now() - requestStartedAt;
+          if (debugRequests || res.statusCode >= 400 || elapsed >= 1_000) {
+            const origin = req.headers.origin ?? "-";
+            const cookieState = req.headers.cookie ? "cookie" : "nocookie";
+            console.log(`[req] ${method} ${pathname} origin=${origin} ${cookieState} -> ${res.statusCode} (${elapsed}ms)`);
+          }
         });
       }
 
@@ -465,25 +587,23 @@ export class MobileBridge {
 
   private isAllowedOrigin(origin: string): boolean {
     if (!origin) return false;
-    // Always allow loopback
+    // Direct loopback development remains available, but reverse proxies do not
+    // gain trust merely because their downstream socket is loopback.
     if (/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) return true;
-    // Match configured origins by host, accepting both http and https schemes so
-    // the Cloudflare front-end works whether the phone loads http:// or https://.
-    // CSRF protection still holds: an attacker's site has a different host and is
-    // rejected regardless of scheme.
-    let host: string;
     try {
-      host = new URL(origin).host;
+      const normalized = new URL(origin).origin;
+      return this.config.allowedOrigins.includes(normalized);
     } catch {
       return false;
     }
-    return this.config.allowedOrigins.some((o) => {
-      try {
-        return new URL(o).host === host;
-      } catch {
-        return false;
-      }
-    });
+  }
+
+  private clientIp(req: http.IncomingMessage): string {
+    const peer = req.socket.remoteAddress ?? "unknown";
+    const isLoopback = peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1";
+    if (!isLoopback) return peer;
+    const forwarded = String(req.headers["x-forwarded-for"] ?? "").split(",", 1)[0].trim();
+    return net.isIP(forwarded) ? forwarded : peer;
   }
 
   /**
@@ -523,7 +643,15 @@ export class MobileBridge {
   // ── Auth Handlers ──────────────────────────────────────────────
 
   private async handleLogin(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    const ip = req.socket.remoteAddress ?? "unknown";
+    if (!this.isAllowedOrigin(req.headers.origin ?? "")) {
+      errorResponse(res, 403, "FORBIDDEN", "Origin not allowed");
+      return;
+    }
+    if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
+      errorResponse(res, 415, "UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json");
+      return;
+    }
+    const ip = this.clientIp(req);
     if (!this.auth.checkRateLimit(ip)) {
       errorResponse(res, 429, "RATE_LIMITED", "Too many login attempts. Try again in 1 minute.");
       return;
@@ -550,6 +678,7 @@ export class MobileBridge {
       errorResponse(res, 401, "UNAUTHORIZED", "Invalid pairing code");
       return;
     }
+    this.auth.clearRateLimit(ip);
 
     res.writeHead(200, {
       "Content-Type": "application/json; charset=utf-8",
@@ -585,6 +714,9 @@ export class MobileBridge {
     let m = matchRoute("/mobile/api/v1/projects/:projectId/sessions", pathname);
     if (m && method === "GET") return this.handleProjectSessions(m.projectId, res);
 
+    // POST /mobile/api/v1/projects/:projectId/sessions  (create a new session in the project cwd)
+    if (m && method === "POST") return this.handleCreateSession(m.projectId, res);
+
     // GET /mobile/api/v1/sessions/:sessionId/history
     m = matchRoute("/mobile/api/v1/sessions/:sessionId/history", pathname);
     if (m && method === "GET") return this.handleHistory(m.sessionId, res);
@@ -613,6 +745,11 @@ export class MobileBridge {
     m = matchRoute("/mobile/api/v1/sessions/:sessionId/model", pathname);
     if (m && method === "POST") return this.handleSetModel(m.sessionId, req, res);
 
+    // GET/PUT /mobile/api/v1/archived-sessions  (proxy to pi-web)
+    if (pathname === "/mobile/api/v1/archived-sessions" && (method === "GET" || method === "PUT")) {
+      return this.handleArchivedSessions(method, req, res);
+    }
+
     errorResponse(res, 404, "NOT_FOUND", `Unknown API path: ${pathname}`);
   }
 
@@ -632,6 +769,34 @@ export class MobileBridge {
       signal: init?.signal ?? AbortSignal.timeout(15_000),
     });
     return res;
+  }
+
+  // Retry an idempotent *read* on transient 5xx / network errors. pi-web can
+  // briefly contend on /api/sessions while finalizing a streaming run (session
+  // file write vs list read), which used to bubble up as 502 and make the
+  // mobile list flash "加载失败" — most visibly when returning from a chat that
+  // was still streaming. 4xx (auth/client) and BRIDGE_STARTING are NOT retried.
+  private async piWebFetchRetry(path: string, init?: RequestInit, attempts = 2): Promise<Response> {
+    let lastErr: any;
+    for (let i = 0; i < attempts; i++) {
+      try {
+        const r = await this.piWebFetch(path, init);
+        if (r.status < 500) return r;
+        try { await r.body?.cancel(); } catch { /* release failed response */ }
+        lastErr = Object.assign(new Error(`pi-web returned ${r.status}`), { status: r.status });
+      } catch (e: any) {
+        if (e?.code === "BRIDGE_STARTING") throw e; // startup race: don't spin
+        lastErr = e;
+      }
+      if (i < attempts - 1) await new Promise((s) => setTimeout(s, 350));
+    }
+    throw lastErr;
+  }
+
+  // Mobile history keeps only renderer-visible fields; hidden reasoning,
+  // signatures, media and tool bodies are bounded before crossing the tunnel.
+  private slimMessages(messages: any[]): any[] {
+    return Array.isArray(messages) ? messages.map(slimMobileMessage) : messages;
   }
 
   // ── Health ─────────────────────────────────────────────────────
@@ -654,7 +819,7 @@ export class MobileBridge {
 
   private async handleProjects(res: http.ServerResponse): Promise<void> {
     try {
-      const upstream = await this.piWebFetch("/api/sessions");
+      const upstream = await this.piWebFetchRetry("/api/sessions");
       if (!upstream.ok) {
         errorResponse(res, 502, "UPSTREAM_UNAVAILABLE", `pi-web returned ${upstream.status}`);
         return;
@@ -703,7 +868,7 @@ export class MobileBridge {
 
   private async handleProjectSessions(projectId: string, res: http.ServerResponse): Promise<void> {
     try {
-      const upstream = await this.piWebFetch("/api/sessions");
+      const upstream = await this.piWebFetchRetry("/api/sessions");
       if (!upstream.ok) {
         errorResponse(res, 502, "UPSTREAM_UNAVAILABLE", `pi-web returned ${upstream.status}`);
         return;
@@ -714,17 +879,25 @@ export class MobileBridge {
 
       const filtered = sessions
         .filter((s) => (s.cwd ?? "unknown") === projectId)
+        .filter((s) => !s.parentSessionId) // hide subagent child sessions
         .map((s) => {
-          // pi-web exposes the session's first user message as `firstMessage`;
-          // use it as the human-readable title (truncated), falling back to null
-          // so the client shows the session id prefix.
+          // pi-web >=0.8.0 auto-names sessions and exposes the title as `name` or `title`;
+          // older versions only have `firstMessage`. Prefer the auto-generated title,
+          // fall back to firstMessage, then null (client shows session id prefix).
+          const autoTitle = typeof s.name === "string" && s.name.trim()
+            ? s.name.trim()
+            : typeof s.title === "string" && s.title.trim()
+              ? s.title.trim()
+              : "";
           const first = typeof s.firstMessage === "string" ? s.firstMessage.trim() : "";
-          const title = first ? (first.length > 48 ? first.slice(0, 48) + "…" : first) : null;
+          const rawTitle = autoTitle || first;
+          const title = rawTitle ? (rawTitle.length > 48 ? rawTitle.slice(0, 48) + "…" : rawTitle) : null;
+          const preview = rawTitle ? (rawTitle.length > 100 ? rawTitle.slice(0, 100) + "…" : rawTitle) : "";
           return {
             sessionId: s.id,
             projectId,
             name: title,
-            preview: first ? (first.length > 100 ? first.slice(0, 100) + "…" : first) : "",
+            preview,
             messageCount: s.messageCount ?? 0,
             created: s.created ?? "",
             modified: s.modified ?? "",
@@ -745,11 +918,42 @@ export class MobileBridge {
     }
   }
 
+  // ── Create session (new chat in a project cwd) ───────────────
+
+  private async handleCreateSession(projectId: string, res: http.ServerResponse): Promise<void> {
+    try {
+      // projectId is the project cwd. ensure_session spawns a fresh pi runtime
+      // without sending a prompt; the phone sends the first message afterwards.
+      const upstream = await this.piWebFetch("/api/agent/new", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cwd: projectId, type: "ensure_session" }),
+      });
+      if (!upstream.ok) {
+        const text = await upstream.text().catch(() => "");
+        errorResponse(res, upstream.status >= 400 && upstream.status < 500 ? upstream.status : 502,
+          "UPSTREAM_UNAVAILABLE", text || `pi-web returned ${upstream.status}`);
+        return;
+      }
+      const data = await upstream.json() as any;
+      if (!data?.sessionId) {
+        errorResponse(res, 502, "UPSTREAM_UNAVAILABLE", "pi-web did not return a sessionId");
+        return;
+      }
+      jsonResponse(res, 200, { sessionId: data.sessionId, projectId });
+    } catch (err: any) {
+      if (err.code === "BRIDGE_STARTING") return errorResponse(res, 503, err.code, err.message);
+      errorResponse(res, 502, "UPSTREAM_UNAVAILABLE", err.message);
+    }
+  }
+
   // ── History (8 MiB limit, deferThinking) ───────────────────────
 
   private async handleHistory(sessionId: string, res: http.ServerResponse): Promise<void> {
     try {
-      const upstream = await this.piWebFetch(`/api/sessions/${encodeURIComponent(sessionId)}?deferThinking=1`);
+      // Retry on transient 5xx/network: mid-stream the deferred-thinking
+      // history read can lose a race against the live session-file write.
+      const upstream = await this.piWebFetchRetry(`/api/sessions/${encodeURIComponent(sessionId)}?deferThinking=1&deferMedia=1`);
       if (upstream.status === 404) {
         errorResponse(res, 404, "SESSION_NOT_FOUND", `Session ${sessionId} not found`);
         return;
@@ -783,15 +987,19 @@ export class MobileBridge {
 
       const raw = JSON.parse(new TextDecoder().decode(concatBuffers(chunks)));
 
-      // Build filtered DTO
-      const messages = raw.context?.messages ?? [];
+      // Build filtered DTO. Slim the payload for mobile BEFORE sending: see
+      // slimMessages() — this is what actually makes session switching fast on
+      // weak links (the frontend only truncates at *render* time, the wire used
+      // to carry full thinking/tool blobs).
+      const allMessages = this.slimMessages(raw.context?.messages ?? []);
+      const messages = allMessages.slice(-MOBILE_HISTORY_MESSAGES);
       const dto = {
         sessionId: raw.sessionId ?? sessionId,
         messages,
         model: raw.context?.model ?? null,
         thinkingLevel: raw.context?.thinkingLevel ?? null,
-        truncated: false,
-        totalMessageCount: raw.info?.messageCount ?? messages.length,
+        truncated: messages.length < allMessages.length,
+        totalMessageCount: raw.info?.messageCount ?? allMessages.length,
       };
 
       jsonResponse(res, 200, dto);
@@ -823,7 +1031,7 @@ export class MobileBridge {
       // ALWAYS true for a persistent interactive session (e.g. the desktop TUI), even
       // while idle waiting for input. The phone needs "actively processing", which
       // mirrors the agent's isRunning(): alive && (promptRunning || streaming || compacting).
-      // Without this, the 5s state poll would permanently report running=true and the
+      // Without this, the periodic state poll would permanently report running=true and the
       // send button would be stuck on the stop icon.
       const activelyRunning = raw.running === true &&
         (state.isPromptRunning === true || state.isStreaming === true || state.isCompacting === true);
@@ -859,6 +1067,12 @@ export class MobileBridge {
       return;
     }
 
+    const currentForSession = this.activeSSEBySession.get(sessionId) ?? 0;
+    if (this.activeSSE.size >= 32 || currentForSession >= 4) {
+      errorResponse(res, 429, "TOO_MANY_STREAMS", "Too many active event streams");
+      return;
+    }
+
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-store, no-transform",
@@ -866,6 +1080,9 @@ export class MobileBridge {
       "X-Accel-Buffering": "no", // nginx/cloudflare hint
     });
     this.activeSSE.add(res);
+    this.activeSSEBySession.set(sessionId, currentForSession + 1);
+    const activeSSE = this.activeSSE;
+    const activeSSEBySession = this.activeSSEBySession;
     const authSessionId = parseCookies(req)["mb_session"];
 
     // Send initial connected event
@@ -873,6 +1090,12 @@ export class MobileBridge {
 
     // Heartbeat every 20 seconds and revalidate auth so a connection cannot
     // outlive logout/revocation/the seven-day session expiry.
+    // NOTE: we emit a real `ping` data event (NOT an SSE comment `:\n\n`).
+    // Comments are silently discarded by EventSource, so the client could never
+    // use them as a liveness signal — a half-open TCP path (common on mobile
+    // NATs that drop idle mappings without a FIN/RST) would look "connected"
+    // forever while no tokens flow. A parseable ping lets the client detect
+    // silence and reconnect. It also keeps the Cloudflare edge from idling out.
     const heartbeat = setInterval(() => {
       if (!this.auth.validate(authSessionId)) {
         try {
@@ -881,8 +1104,40 @@ export class MobileBridge {
         cleanup();
         return;
       }
-      try { res.write(":\n\n"); } catch { /* client gone */ }
+      try { res.write(`data: ${JSON.stringify({ type: "ping" })}\n\n`); } catch { /* client gone */ }
     }, 20_000);
+
+    // Parse upstream SSE records so mobile receives compact deltas instead of
+    // duplicate cumulative snapshots. Pure comment heartbeats are dropped; the
+    // BFF's JSON ping above is the single phone-visible liveness signal.
+    const decoder = new StringDecoder("utf8");
+    let upstreamBuffer = "";
+    const compactFrames = (chunk: Buffer | null): string[] => {
+      upstreamBuffer += chunk ? decoder.write(chunk) : decoder.end();
+      const output: string[] = [];
+      while (true) {
+        const separator = upstreamBuffer.match(/\r?\n\r?\n/);
+        if (!separator || separator.index == null) break;
+        const frame = upstreamBuffer.slice(0, separator.index);
+        upstreamBuffer = upstreamBuffer.slice(separator.index + separator[0].length);
+        const data = frame.split(/\r?\n/)
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).trimStart())
+          .join("\n");
+        if (!data) continue;
+        try {
+          const optimized = optimizeMobileSSEEvent(JSON.parse(data));
+          if (optimized) output.push(`data: ${JSON.stringify(optimized)}\n\n`);
+        } catch {
+          output.push(`data: ${JSON.stringify({ type: "error", message: "Invalid upstream event" })}\n\n`);
+        }
+      }
+      if (upstreamBuffer.length > 2 * 1024 * 1024) {
+        upstreamBuffer = "";
+        output.push(`data: ${JSON.stringify({ type: "error", message: "Upstream event exceeded buffer limit", terminal: true })}\n\n`);
+      }
+      return output;
+    };
 
     // Connect to upstream SSE
     const upstreamReq = http.request(
@@ -894,6 +1149,7 @@ export class MobileBridge {
         headers: { Accept: "text/event-stream" },
       },
       (upstreamRes) => {
+        clearTimeout(headerTimer); // headers arrived; long-lived stream takes over
         if (upstreamRes.statusCode !== 200) {
           const terminal = upstreamRes.statusCode === 401 || upstreamRes.statusCode === 404;
           res.write(`data: ${JSON.stringify({ type: "error", message: `upstream ${upstreamRes.statusCode}`, terminal })}\n\n`);
@@ -901,9 +1157,19 @@ export class MobileBridge {
           return;
         }
         upstreamRes.on("data", (chunk: Buffer) => {
-          try { res.write(chunk); } catch { /* client gone */ }
+          try {
+            let blocked = false;
+            for (const frame of compactFrames(chunk)) {
+              if (!res.write(frame)) blocked = true;
+            }
+            if (blocked) {
+              upstreamRes.pause();
+              res.once("drain", () => { if (!cleaned) upstreamRes.resume(); });
+            }
+          } catch { cleanup(); }
         });
         upstreamRes.on("end", () => {
+          for (const frame of compactFrames(null)) res.write(frame);
           res.write(`data: ${JSON.stringify({ type: "stream_end" })}\n\n`);
           cleanup();
         });
@@ -912,9 +1178,19 @@ export class MobileBridge {
     );
 
     upstreamReq.on("error", (err) => {
-      res.write(`data: ${JSON.stringify({ type: "error", message: err.message })}\n\n`);
+      clearTimeout(headerTimer);
+      res.write(`data: ${JSON.stringify({ type: "error", message: "Upstream event connection failed" })}\n\n`);
       cleanup();
     });
+
+    // Guard the header phase only: if pi-web never answers (stuck/crashing
+    // without closing the socket), the native http.request would otherwise hang
+    // until the OS default timeout (minutes), leaking a client connection and a
+    // slot in activeSSE. 20s is generous for a loopback hop. Cleared the moment
+    // headers arrive so a slow-but-streaming agent is never killed.
+    const headerTimer = setTimeout(() => {
+      try { upstreamReq.destroy(new Error("upstream header timeout")); } catch { /* ignore */ }
+    }, 20_000);
 
     upstreamReq.end();
 
@@ -923,6 +1199,10 @@ export class MobileBridge {
       if (cleaned) return;
       cleaned = true;
       clearInterval(heartbeat);
+      activeSSE.delete(res);
+      const remaining = (activeSSEBySession.get(sessionId) ?? 1) - 1;
+      if (remaining > 0) activeSSEBySession.set(sessionId, remaining);
+      else activeSSEBySession.delete(sessionId);
       try { upstreamReq.destroy(); } catch { /* ignore */ }
       try { res.end(); } catch { /* ignore */ }
     }
@@ -931,10 +1211,7 @@ export class MobileBridge {
     // For a body-less GET (SSE), req emits "close" right after headers are read,
     // which would tear down the long-lived stream immediately. res "close" only
     // fires when the underlying connection actually closes (client left).
-    res.on("close", () => {
-      this.activeSSE.delete(res);
-      cleanup();
-    });
+    res.on("close", cleanup);
   }
 
   // ── Send Message ───────────────────────────────────────────────
@@ -1062,6 +1339,35 @@ export class MobileBridge {
         return;
       }
       jsonResponse(res, 200, { ok: true });
+    } catch (err: any) {
+      if (err.code === "BRIDGE_STARTING") return errorResponse(res, 503, err.code, err.message);
+      errorResponse(res, 502, "UPSTREAM_UNAVAILABLE", err.message);
+    }
+  }
+
+  private async handleArchivedSessions(method: string, req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    try {
+      if (method === "GET") {
+        const upstream = await this.piWebFetch("/api/archived-sessions");
+        if (!upstream.ok) return errorResponse(res, 502, "UPSTREAM_UNAVAILABLE", `pi-web returned ${upstream.status}`);
+        const data = await upstream.json();
+        return jsonResponse(res, 200, data);
+      }
+      // PUT
+      let raw: Buffer;
+      try { raw = await readBody(req, 1024 * 64); }
+      catch (err: any) {
+        if (err?.message === "BODY_TOO_LARGE") return errorResponse(res, 413, "BODY_TOO_LARGE", "Request body too large");
+        return errorResponse(res, 400, "INVALID_REQUEST", "Failed to read body");
+      }
+      const upstream = await this.piWebFetch("/api/archived-sessions", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: raw.toString("utf-8"),
+      });
+      if (!upstream.ok) return errorResponse(res, 502, "UPSTREAM_UNAVAILABLE", `pi-web returned ${upstream.status}`);
+      const data = await upstream.json();
+      jsonResponse(res, 200, data);
     } catch (err: any) {
       if (err.code === "BRIDGE_STARTING") return errorResponse(res, 503, err.code, err.message);
       errorResponse(res, 502, "UPSTREAM_UNAVAILABLE", err.message);

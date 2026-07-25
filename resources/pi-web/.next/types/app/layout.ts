@@ -1,4 +1,4 @@
-// File: /Users/alex/Documents/Workspace/pi-web/app/layout.tsx
+// File: D:\PI-web-desktop\resources\pi-web\app\layout.tsx
 import * as entry from '../../../app/layout.js'
 import type { ResolvingMetadata, ResolvingViewport } from 'next/dist/lib/metadata/types/metadata-interface.js'
 

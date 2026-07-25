@@ -2,8 +2,8 @@ self.__SERVER_FILES_MANIFEST={
   "version": 1,
   "config": {
     "env": {
-      "NEXT_PUBLIC_APP_VERSION": "0.7.16",
-      "NEXT_PUBLIC_PI_VERSION": "0.80.10"
+      "NEXT_PUBLIC_APP_VERSION": "0.8.0",
+      "NEXT_PUBLIC_PI_VERSION": "0.81.1"
     },
     "webpack": null,
     "typescript": {
@@ -107,7 +107,7 @@ self.__SERVER_FILES_MANIFEST={
         "transform": "lodash/{{member}}"
       }
     },
-    "outputFileTracingRoot": "/Users/alex/Documents/Workspace/pi-web",
+    "outputFileTracingRoot": "D:\\PI-web-desktop",
     "allowedDevOrigins": [
       "192.168.*.*"
     ],
@@ -172,13 +172,12 @@ self.__SERVER_FILES_MANIFEST={
       "proxyPrefetch": "flexible",
       "optimisticClientCache": true,
       "manualClientBasePath": false,
-      "cpus": 11,
+      "cpus": 7,
       "memoryBasedWorkersCount": false,
       "imgOptConcurrency": null,
       "imgOptTimeoutInSeconds": 7,
       "imgOptMaxInputPixels": 268402689,
       "imgOptSequentialRead": null,
-      "imgOptSkipMetadata": null,
       "isrFlushToDisk": true,
       "workerThreads": false,
       "optimizeCss": false,
@@ -310,37 +309,40 @@ self.__SERVER_FILES_MANIFEST={
     "bundlePagesRouterDependencies": false,
     "configFileName": "next.config.ts",
     "serverExternalPackages": [
+      "undici",
       "@earendil-works/pi-coding-agent",
+      "@earendil-works/pi-agent-core",
       "@earendil-works/pi-ai",
       "@earendil-works/pi-tui"
     ],
     "turbopack": {
-      "root": "/Users/alex/Documents/Workspace/pi-web"
+      "root": "D:\\PI-web-desktop"
     },
     "distDirRoot": ".next"
   },
-  "appDir": "/Users/alex/Documents/Workspace/pi-web",
-  "relativeAppDir": "",
+  "appDir": "D:\\PI-web-desktop\\resources\\pi-web",
+  "relativeAppDir": "resources\\pi-web",
   "files": [
-    ".next/package.json",
-    ".next/routes-manifest.json",
-    ".next/server/pages-manifest.json",
-    ".next/build-manifest.json",
-    ".next/prerender-manifest.json",
-    ".next/server/functions-config-manifest.json",
-    ".next/server/middleware-manifest.json",
-    ".next/server/middleware-build-manifest.js",
-    ".next/server/middleware-react-loadable-manifest.js",
-    ".next/react-loadable-manifest.json",
-    ".next/server/app-paths-manifest.json",
-    ".next/app-path-routes-manifest.json",
-    ".next/server/server-reference-manifest.js",
-    ".next/server/server-reference-manifest.json",
-    ".next/server/prefetch-hints.json",
-    ".next/BUILD_ID",
-    ".next/server/next-font-manifest.js",
-    ".next/server/next-font-manifest.json",
-    ".next/required-server-files.json"
+    ".next\\package.json",
+    ".next\\routes-manifest.json",
+    ".next\\server\\pages-manifest.json",
+    ".next\\build-manifest.json",
+    ".next\\prerender-manifest.json",
+    ".next\\server\\functions-config-manifest.json",
+    ".next\\server\\middleware-manifest.json",
+    ".next\\server\\middleware-build-manifest.js",
+    ".next\\server\\middleware-react-loadable-manifest.js",
+    ".next\\react-loadable-manifest.json",
+    ".next\\server\\app-paths-manifest.json",
+    ".next\\app-path-routes-manifest.json",
+    ".next\\server\\server-reference-manifest.js",
+    ".next\\server\\server-reference-manifest.json",
+    ".next\\server\\prefetch-hints.json",
+    ".next\\BUILD_ID",
+    ".next\\server\\next-font-manifest.js",
+    ".next\\server\\next-font-manifest.json",
+    ".next\\required-server-files.json",
+    ".next\\server\\instrumentation.js"
   ],
   "ignore": []
 }

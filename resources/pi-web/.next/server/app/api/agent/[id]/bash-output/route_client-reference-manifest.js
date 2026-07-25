@@ -1,0 +1,1 @@
+globalThis.__RSC_MANIFEST=(globalThis.__RSC_MANIFEST||{});globalThis.__RSC_MANIFEST["/api/agent/[id]/bash-output/route"]={"moduleLoading":{"prefix":"/_next/"},"ssrModuleMapping":{},"edgeSSRModuleMapping":{},"clientModules":{},"entryCSSFiles":{"D:\\PI-web-desktop\\resources\\pi-web\\app\\api\\agent\\[id]\\bash-output\\route":[]},"rscModuleMapping":{},"edgeRscModuleMapping":{}};

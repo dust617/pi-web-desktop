@@ -13,6 +13,8 @@ files:
   - resources/icon.png
   - resources/icon.ico
   - resources/icon-32.png
+  - resources/tray-icon.png
+  - resources/tray-icon-16.png
   - package.json
 
 # Exclude heavy dev artifacts from the asar/app

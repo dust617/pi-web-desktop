@@ -8,7 +8,7 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { MobileBridge } = require("../../dist/mobile-bridge.js");
 
-const ORIGIN_OK = "https://mobile.tt56677.top";
+const ORIGIN_OK = "https://pi.tt56677.top:8443";
 const ORIGIN_BAD = "https://evil.example.com";
 const BFF_PORT = 62899;
 
@@ -43,9 +43,18 @@ function upstreamState(running = true, flags = {}) {
   };
 }
 let mockState = upstreamState();
+let lastHistorySearch = "";
 const mock = http.createServer((req, res) => {
   const u = new URL(req.url, "http://x"); const p = u.pathname;
   const parts = p.split("/").filter(Boolean);
+  if (req.method === "GET" && p === "/api/agent/s1/events") {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write(`data: ${JSON.stringify({ type: "connected" })}\n\n`);
+    const hugeSnapshot = "duplicate-snapshot-".repeat(4000);
+    res.write(`data: ${JSON.stringify({ type: "message_update", message: { role: "assistant", content: [{ type: "text", text: hugeSnapshot }] }, assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Z", partial: { role: "assistant", content: [{ type: "text", text: hugeSnapshot }] } } })}\n\n`);
+    setTimeout(() => res.end(), 100);
+    return;
+  }
   if (req.method === "POST" && parts[0] === "api" && parts[1] === "agent") {
     let b = ""; req.on("data", (c) => (b += c));
     req.on("end", () => { lastAgentBody = b; json(res, {}); }); return;
@@ -54,8 +63,17 @@ const mock = http.createServer((req, res) => {
   if (p === "/api/sessions") return json(res, { sessions: [{ id: "s1", cwd: "/p/a", name: "sess1", modified: "2026-07-22T10:00:00Z", messageCount: 3, preview: "hi" }], runningSessionIds: [] });
   if (p === "/api/models") return json(res, { modelList: [{ id: "m1", name: "Model 1", provider: "prov" }], defaultModel: null, thinkingLevels: {} });
   if (parts[0] === "api" && parts[1] === "sessions" && parts.length === 3) {
+    lastHistorySearch = u.search;
     if (parts[2] === "big") { const pad = "x".repeat(9 * 1024 * 1024); return json(res, { sessionId: "big", context: { messages: [{ role: "user", content: pad }] }, info: { messageCount: 1 } }); }
-    return json(res, { sessionId: parts[2], context: { messages: [{ role: "user", content: "hello" }], model: { provider: "prov", id: "m1" }, thinkingLevel: "off" }, info: { messageCount: 1 } });
+    const messages = Array.from({ length: 125 }, (_, i) => ({ role: "user", content: `history-${i}` }));
+    messages.push({ role: "system", content: "system-body-".repeat(300) });
+    messages.push({ role: "toolResult", toolName: "read", content: "tool-body-".repeat(300) });
+    messages.push({ role: "assistant", content: [
+      { type: "thinking", thinking: "reason-".repeat(100), signature: "SECRET_SIGNATURE" },
+      { type: "image", data: "SECRET_BASE64".repeat(100), mimeType: "image/png" },
+      { type: "text", text: "final answer" },
+    ] });
+    return json(res, { sessionId: parts[2], context: { messages, model: { provider: "prov", id: "m1" }, thinkingLevel: "off" }, info: { messageCount: messages.length } });
   }
   if (parts[0] === "api" && parts[1] === "sessions" && parts[3] === "state") {
     return json(res, mockState);
@@ -86,8 +104,9 @@ function sseConnected(port, cookie) {
   return new Promise((resolve) => {
     const r = http.request({ host: "127.0.0.1", port, method: "GET", path: "/mobile/api/v1/sessions/s1/events", headers: { Cookie: cookie, Accept: "text/event-stream" } }, (res) => {
       let buf = ""; const ct = res.headers["content-type"] || "";
-      res.on("data", (c) => { buf += c.toString(); if (buf.includes("connected")) { r.destroy(); resolve({ status: res.statusCode, ct, connected: true }); } });
-      setTimeout(() => { r.destroy(); resolve({ status: res.statusCode, ct, connected: buf.includes("connected"), raw: buf.slice(0, 80) }); }, 3000);
+      const done = () => { r.destroy(); resolve({ status: res.statusCode, ct, connected: buf.includes("connected"), raw: buf }); };
+      res.on("data", (c) => { buf += c.toString(); if (buf.includes("text_delta")) done(); });
+      setTimeout(done, 3000);
     });
     r.on("error", (e) => resolve({ status: 0, ct: "", connected: false, raw: e.message }));
     r.end();
@@ -116,21 +135,25 @@ async function main() {
   check("T2 GET /auth/pairing-code -> 404 (P0-1)", r.status === 404);
 
   r = await req(P, "POST", "/mobile/auth/login", { body: { code: "000000" } });
+  check("T3 login missing Origin -> 403", r.status === 403);
+  r = await req(P, "POST", "/mobile/auth/login", { headers: { Origin: ORIGIN_BAD }, body: { code: "000000" } });
+  check("T3 login bad Origin -> 403", r.status === 403);
+  r = await req(P, "POST", "/mobile/auth/login", { headers: { Origin: ORIGIN_OK }, body: { code: "000000" } });
   check("T3 login wrong code -> 401", r.status === 401);
 
-  r = await req(P, "POST", "/mobile/auth/login", { body: { code } });
+  r = await req(P, "POST", "/mobile/auth/login", { headers: { Origin: ORIGIN_OK }, body: { code } });
   const sc = rawCookie(r.headers["set-cookie"]);
   check("T4 login ok -> 200", r.status === 200);
   check("T4 cookie HttpOnly+SameSite=Strict", /HttpOnly/i.test(sc) && /SameSite=Strict/i.test(sc), sc);
   check("T4 cookie NOT Secure on plain http", !/Secure/i.test(sc), sc);
   const cookie = jar(r.headers["set-cookie"]);
 
-  r = await req(P, "POST", "/mobile/auth/login", { headers: { "x-forwarded-proto": "https" }, body: { code } });
+  r = await req(P, "POST", "/mobile/auth/login", { headers: { Origin: ORIGIN_OK, "x-forwarded-proto": "https" }, body: { code } });
   const persistedCookie = jar(r.headers["set-cookie"]);
   check("T5 cookie Secure when x-forwarded-proto=https (P2-1)", /Secure/i.test(rawCookie(r.headers["set-cookie"])), rawCookie(r.headers["set-cookie"]));
 
   let saw429 = false;
-  for (let i = 0; i < 10; i++) { const rr = await req(P, "POST", "/mobile/auth/login", { body: { code: "000000" } }); if (rr.status === 429) { saw429 = true; break; } }
+  for (let i = 0; i < 10; i++) { const rr = await req(P, "POST", "/mobile/auth/login", { headers: { Origin: ORIGIN_OK }, body: { code: "000000" } }); if (rr.status === 429) { saw429 = true; break; } }
   check("T6 rate limit triggers 429", saw429);
 
   r = await req(P, "GET", "/mobile/api/v1/projects", { headers: { Cookie: cookie } });
@@ -162,7 +185,13 @@ async function main() {
   mockState = upstreamState();
 
   r = await req(P, "GET", "/mobile/api/v1/sessions/s1/history", { headers: { Cookie: cookie } });
-  check("T10 history -> 200 + messages", r.status === 200 && Array.isArray(r.json().messages));
+  const history = r.json();
+  const historyText = r.text();
+  check("T10 history -> capped recent 120 messages", r.status === 200 && history?.messages?.length === 120 && history.truncated === true);
+  check("T10 history requests deferred thinking + media", lastHistorySearch.includes("deferThinking=1") && lastHistorySearch.includes("deferMedia=1"), lastHistorySearch);
+  check("T10 hidden signatures/base64 never reach mobile", !historyText.includes("SECRET_SIGNATURE") && !historyText.includes("SECRET_BASE64"));
+  check("T10 outer toolResult body is capped", history.messages.at(-2)?.role === "toolResult" && history.messages.at(-2)?.content?.length < 1000);
+  check("T10 non-rendered system body is minimized", history.messages.find((message) => message.role === "system")?.content?.length < 600);
 
   r = await req(P, "GET", "/mobile/api/v1/sessions/big/history", { headers: { Cookie: cookie } });
   check("T11 history >8MiB -> 413", r.status === 413, "got " + r.status);
@@ -187,6 +216,8 @@ async function main() {
   const sse = await sseConnected(P, cookie);
   check("T17 SSE 200 + event-stream", sse.status === 200 && /event-stream/.test(sse.ct), JSON.stringify(sse).slice(0, 120));
   check("T17 SSE emits connected event", sse.connected, sse.raw || "");
+  check("T17 SSE forwards compact text delta", sse.raw.includes('"type":"text_delta"') && sse.raw.includes('"delta":"Z"'), sse.raw.slice(0, 300));
+  check("T17 SSE strips cumulative snapshot/partial", !sse.raw.includes("duplicate-snapshot") && !sse.raw.includes('"partial"') && sse.raw.length < 2000, `bytes=${sse.raw.length}`);
 
   r = await req(P, "POST", "/mobile/auth/revoke-all", { headers: { Cookie: cookie, Origin: ORIGIN_OK }, body: {} });
   check("T17 revoke-all has no HTTP route or pairing-code response", r.status === 404 && !r.text().includes("newCode"), "got " + r.status + " " + r.text().slice(0, 100));

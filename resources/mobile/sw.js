@@ -4,13 +4,12 @@
 //  1. Bump VERSION here AND PWA_VERSION in index.html on every deploy.
 //  2. sw.js is served with `Cache-Control: no-store`, so the browser always
 //     fetches the newest sw.js (Cloudflare must NOT cache it — see cache rule).
-//  3. On install we skipWaiting(); on activate we claim() all open pages and
-//     postMessage the new VERSION to every client.
-//  4. index.html compares the posted VERSION to its baked-in PWA_VERSION and
-//     reloads once if they differ — picking up the new shell automatically.
+//  3. On install we skipWaiting(); on activate we claim() all open pages.
+//  4. Open pages are never force-reloaded; the next cold launch gets the new
+//     network-first shell while an active chat remains undisturbed.
 //
 // API/auth/SSE are never intercepted. Offline launch still works from cache.
-const VERSION = "pi-mobile-v5";
+const VERSION = "pi-mobile-v31";
 const CACHE_NAME = VERSION;
 const SHELL_URLS = ["/mobile/", "/mobile/index.html", "/mobile/manifest.json"];
 
@@ -32,12 +31,15 @@ self.addEventListener("activate", (event) => {
       await Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)));
       // Take control of all currently-open pages right now.
       await self.clients.claim();
-      // Tell every open page which version just took over so it can reload
-      // itself if it is still running an older shell.
-      const clients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-      for (const client of clients) {
-        client.postMessage({ type: "sw-version", version: VERSION });
-      }
+      // NOTE: we deliberately do NOT broadcast sw-version here. The old design
+      // made open pages reload themselves on a new shell, but a mid-session
+      // reload wipes all in-memory chat state and drops the user back to the
+      // project list — the "auto-refresh / dropped and re-entered" instability.
+      // The shell is network-first + no-store, so the NEXT cold launch serves
+      // the fresh shell with zero cache clearing; no hot reload is needed.
+      // Silencing the broadcast also means an already-open OLD page never even
+      // learns a new version exists, so it won't reload either — it just keeps
+      // running quietly until the user next reopens the app.
     })()
   );
 });
@@ -51,14 +53,19 @@ self.addEventListener("message", (event) => {
 
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
-  // Never intercept API, auth, or SSE — those must always hit the network.
-  if (url.pathname.startsWith("/mobile/api/") || url.pathname.startsWith("/mobile/auth/")) {
+  // Never intercept cross-origin requests, mutations, API, auth, or SSE.
+  if (url.origin !== self.location.origin || event.request.method !== "GET" ||
+      !url.pathname.startsWith("/mobile/") ||
+      url.pathname.startsWith("/mobile/api/") || url.pathname.startsWith("/mobile/auth/")) {
     return;
   }
-  // Everything else under /mobile/: network-first with cache fallback so the
-  // latest shell loads online, and the app still launches offline.
+
+  // A half-open mobile link may never reject fetch(). Bound network-first so an
+  // already-cached shell opens promptly instead of showing a blank screen.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
   event.respondWith(
-    fetch(event.request)
+    fetch(event.request, { signal: controller.signal })
       .then((res) => {
         if (res && res.status === 200 && res.type === "basic") {
           const clone = res.clone();
@@ -66,6 +73,7 @@ self.addEventListener("fetch", (event) => {
         }
         return res;
       })
-      .catch(() => caches.match(event.request))
+      .catch(async () => (await caches.match(event.request)) || Response.error())
+      .finally(() => clearTimeout(timer))
   );
 });

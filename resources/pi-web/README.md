@@ -1,12 +1,12 @@
-# pi-web
+# Pi Web
 
 [中文文档](./README.zh-CN.md)
 
-Local web UI for the [pi coding agent](https://github.com/badlogic/pi-mono). pi-web reads your local pi session files and gives you a browser workspace for session browsing, real-time chat, model configuration, skill management, and project file preview.
+Local web UI for the [pi coding agent](https://github.com/badlogic/pi-mono). Pi Web reads your local pi session files and gives you a browser workspace for session browsing, real-time chat, model configuration, skill management, and project file preview.
 
 ![Pi Web shows the same pi session with structured Markdown, tool calls, and project navigation beside the CLI](https://raw.githubusercontent.com/agegr/pi-web/main/docs/screenshot2.png)
 
-The same pi session in CLI and pi-web: structured tool calls, readable Markdown, session browsing, and cleaner results.
+The same pi session in CLI and Pi Web: structured tool calls, readable Markdown, session browsing, and cleaner results.
 
 ## Quick Start
 
@@ -37,6 +37,28 @@ PORT=8080 pi-web                # environment variable is also supported
 PI_WEB_NO_OPEN=1 pi-web         # useful when running as a background service
 ```
 
+## HTTP Proxy
+
+Pi Web reads the standard `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` environment variables for server-side model and API requests.
+
+On macOS or Linux:
+
+```bash
+HTTP_PROXY=http://127.0.0.1:7890 \
+HTTPS_PROXY=http://127.0.0.1:7890 \
+NO_PROXY=localhost,127.0.0.1 \
+npx @agegr/pi-web@latest
+```
+
+On Windows PowerShell:
+
+```powershell
+$env:HTTP_PROXY = "http://127.0.0.1:7890"
+$env:HTTPS_PROXY = "http://127.0.0.1:7890"
+$env:NO_PROXY = "localhost,127.0.0.1"
+npx @agegr/pi-web@latest
+```
+
 ## Features
 
 - **Pick work back up**: browse previous pi conversations by project without digging through terminal history or session paths.
@@ -48,11 +70,11 @@ PI_WEB_NO_OPEN=1 pi-web         # useful when running as a background service
 
 ## Notes
 
-- **Data directory**: pi-web reads `~/.pi/agent/sessions` by default. Set `PI_CODING_AGENT_DIR` to point at another pi agent directory.
+- **Data directory**: Pi Web reads `~/.pi/agent/sessions` by default. Set `PI_CODING_AGENT_DIR` to point at another pi agent directory.
 - **Session files**: files are stored as `~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl`.
 - **Model config**: the Models panel reads and writes `models.json` in the pi agent directory. Model lists and defaults come from pi's config.
 - **File access**: file browsing and preview are scoped to the selected project directory and working directories that appear in sessions.
-- **Git worktrees**: see [Worktrees in pi-web](./docs/worktrees.md) for when the switcher appears, how new worktrees are created, and what removal does.
+- **Git worktrees**: see [Worktrees in Pi Web](./docs/worktrees.md) for when the switcher appears, how new worktrees are created, and what removal does.
 - **Forks vs in-session branches**: Fork creates a new `.jsonl` file. "Edit from here" creates another branch inside the same session file.
 
 ## Development
@@ -99,6 +121,7 @@ components/
   FileExplorer.tsx    # file tree
   FileViewer.tsx      # source, diff, image, audio, PDF, DOCX preview
 lib/
+  http-dispatcher.ts  # HTTP(S) proxy setup for server-side fetch
   rpc-manager.ts      # AgentSessionWrapper lifecycle and global registry
   session-reader.ts   # parses .jsonl session files and branch contexts
   normalize.ts        # normalizes toolCall field names
@@ -113,4 +136,5 @@ hooks/
   useTheme.ts         # theme switching
 bin/
   pi-web.js           # npm CLI entrypoint
+instrumentation.ts    # initializes the server HTTP dispatcher
 ```

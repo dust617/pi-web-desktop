@@ -1,6 +1,6 @@
 # Pi Web Desktop：项目计划
 
-> **本文件是唯一权威计划。task_plan.md、session_context.md、progress.md、findings.md 均为连续性辅助文件，如有冲突以本文件为准。**
+> **历史基线（2026-07-21），不再是当前权威计划。** 当前状态见 `.pi/memory/STATUS.md`，稳定事实见 `.pi/memory/FACTS.md`，当前复杂任务见 `task_plan.md`。本文件保留最初桌面薄壳范围，后续移动端/公网中继演进以已验证运行状态和专题文档为准。
 
 ## 1. 目标与核心原则
 
@@ -184,6 +184,6 @@ Pi Web Desktop（Electron，薄壳）
 - 下次运行先读 progress.md，从断点继续，不重复已完成工作
 - 若感知到 token 接近限额，立即保存状态并停止
 
-## 当前下一步
+## 历史下一步（已失效）
 
-阶段 0：建 Electron 骨架，用系统 node.exe 启动内置 pi-web，验证启动/退出/端口释放。
+原阶段 0 已完成；不要据此覆盖现有移动端、公网中继和后续安全工作。

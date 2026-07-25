@@ -57,25 +57,43 @@ function resolvePiWebBin(): string {
 export function waitForReady(url: string, timeoutMs = 30000): Promise<void> {
   const start = Date.now();
   return new Promise((resolve, reject) => {
+    let settled = false;
+    let retryTimer: NodeJS.Timeout | null = null;
+
+    const finishError = () => {
+      if (settled) return;
+      settled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      reject(new Error(`Pi Web 在 ${timeoutMs}ms 内未就绪（需要 HTTP 2xx）`));
+    };
+    const scheduleRetry = () => {
+      if (settled || retryTimer) return;
+      const remaining = timeoutMs - (Date.now() - start);
+      if (remaining <= 0) return finishError();
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        check();
+      }, Math.min(500, remaining));
+    };
     const check = () => {
-      if (Date.now() - start > timeoutMs) {
-        reject(new Error(`Pi Web 在 ${timeoutMs}ms 内未就绪（需要 HTTP 2xx）`));
-        return;
-      }
+      if (settled) return;
+      if (Date.now() - start >= timeoutMs) return finishError();
       const req = http.get(url, (res) => {
-        res.resume();
         const code = res.statusCode ?? 0;
+        res.resume();
         if (code >= 200 && code < 300) {
+          settled = true;
+          if (retryTimer) clearTimeout(retryTimer);
           resolve();
         } else {
-          setTimeout(check, 500);
+          res.once("end", scheduleRetry);
         }
       });
-      req.on("error", () => setTimeout(check, 500));
-      req.setTimeout(2000, () => {
-        req.destroy();
-        setTimeout(check, 500);
-      });
+      req.once("error", scheduleRetry);
+      // Destroying emits error; that single path schedules the next probe. Bound
+      // the final probe by the global deadline instead of always adding 2s.
+      const remaining = Math.max(1, timeoutMs - (Date.now() - start));
+      req.setTimeout(Math.min(2000, remaining), () => req.destroy(new Error("readiness probe timed out")));
     };
     check();
   });
@@ -207,7 +225,21 @@ export class PiWebRuntime {
     const url = `http://${hostname}:${port}`;
     try {
       await Promise.race([waitForReady(url), startupFailure]);
-      if (cwd) await Promise.race([setProjectCwd(url, cwd), startupFailure]);
+      if (cwd) {
+        // Non-fatal: pi-web >=0.8.0 sets the project dir via the ?cwd= URL
+        // parameter (see getProjectUrl), and the legacy /api/cwd/validate
+        // endpoint may change or disappear across versions. A failure here must
+        // NOT abort startup — the URL parameter is the source of truth.
+        try {
+          await Promise.race([setProjectCwd(url, cwd), startupFailure]);
+        } catch (cwdErr) {
+          console.warn(
+            `[pi-web] setProjectCwd failed (non-fatal, relying on ?cwd= URL param): ${
+              cwdErr instanceof Error ? cwdErr.message : String(cwdErr)
+            }`
+          );
+        }
+      }
 
       if (
         generation !== this.startGeneration ||

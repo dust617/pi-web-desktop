@@ -2,7 +2,7 @@
  * Pi Web Desktop – Electron Main Process
  * Stage 1: tray, window state memory, enhanced menu, detailed error dialogs.
  */
-import { app, BrowserWindow, ipcMain, dialog, shell, Menu, Tray, nativeImage } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, shell, Menu, Tray, nativeImage, clipboard } from "electron";
 import { execSync } from "child_process";
 import * as path from "path";
 import * as fs from "fs";
@@ -15,6 +15,67 @@ interface ProjectOpenRequest {
 }
 
 const runtime = new PiWebRuntime();
+
+// ─── Staged pi-web Upgrade Auto-Swap ─────────────────────────────────
+// When a newer pi-web tarball has been unpacked into .backup/pi-web-*-staged,
+// swap it into resources/pi-web on next cold start (the running instance holds
+// an exclusive lock on the old directory, so we cannot hot-swap). If the swap
+// fails (e.g. another instance still holds the lock), we log and continue with
+// the old version — the next restart will retry.
+function tryApplyStagedPiWebUpgrade(): void {
+  // Packaged resources live inside app.asar/app.asar.unpacked and must be
+  // upgraded by a signed installer, never by mutating the installation tree.
+  if (app.isPackaged) return;
+  const backupDir = path.join(__dirname, "..", ".backup");
+  if (!fs.existsSync(backupDir)) return;
+  let stagedDir: string | null = null;
+  try {
+    const entries = fs.readdirSync(backupDir);
+    for (const name of entries) {
+      if (/^pi-web-[\d.]+-staged$/.test(name)) {
+        stagedDir = path.join(backupDir, name);
+        break;
+      }
+    }
+  } catch { return; }
+  if (!stagedDir) return;
+
+  const stagedPkg = path.join(stagedDir, "package.json");
+  const currentPkg = path.join(__dirname, "..", "resources", "pi-web", "package.json");
+  if (!fs.existsSync(stagedPkg) || !fs.existsSync(currentPkg)) return;
+
+  let movedCurrentTo: string | null = null;
+  try {
+    const stagedVer = JSON.parse(fs.readFileSync(stagedPkg, "utf8")).version as string;
+    const currentVer = JSON.parse(fs.readFileSync(currentPkg, "utf8")).version as string;
+    if (stagedVer === currentVer) return; // already up-to-date
+
+    console.log(`[main] staged pi-web ${stagedVer} detected (current: ${currentVer}), attempting swap...`);
+    const targetDir = path.join(__dirname, "..", "resources", "pi-web");
+    const oldDir = path.join(backupDir, `pi-web-${currentVer}-old-${Date.now()}`);
+
+    fs.renameSync(targetDir, oldDir);
+    movedCurrentTo = oldDir;
+    try {
+      fs.renameSync(stagedDir, targetDir);
+      movedCurrentTo = null;
+    } catch (swapErr) {
+      // The old runtime has already moved; restore it synchronously before the
+      // app continues so a failed staged upgrade cannot brick the next start.
+      fs.renameSync(oldDir, targetDir);
+      movedCurrentTo = null;
+      throw swapErr;
+    }
+    console.log(`[main] pi-web upgraded ${currentVer} -> ${stagedVer} (old backup: ${oldDir})`);
+  } catch (err) {
+    console.warn(`[main] staged pi-web swap failed (old runtime preserved): ${err instanceof Error ? err.message : String(err)}`);
+    if (movedCurrentTo) {
+      console.error(`[main] staged pi-web rollback needs manual recovery from ${movedCurrentTo}`);
+    }
+  }
+}
+tryApplyStagedPiWebUpgrade();
+
 let mobileBridge: MobileBridge | null = null;
 let mainWindow: BrowserWindow | null = null;
 let windowReadyPromise: Promise<void> | null = null;
@@ -84,14 +145,23 @@ function writePendingProjectRequest(request: ProjectOpenRequest): void {
 // ─── Shared App Icon ─────────────────────────────────────────────────
 
 const ICON_PATH = path.join(__dirname, "..", "resources", "icon.png");
-const TRAY_ICON_PATH = path.join(__dirname, "..", "resources", "icon-32.png");
+// High-contrast tray badge (white-haloed disc) so the icon stays visible on
+// dark Windows taskbars. The legacy icon-32.png was a dark-teel π on a fully
+// transparent background, which vanished against dark taskbars ("black &
+// unreadable"). Fall back to the legacy file / a resized app icon if missing.
+const TRAY_ICON_PATH = path.join(__dirname, "..", "resources", "tray-icon.png");
+const TRAY_ICON_LEGACY_PATH = path.join(__dirname, "..", "resources", "icon-32.png");
 const APP_ICON = fs.existsSync(ICON_PATH)
   ? nativeImage.createFromPath(ICON_PATH)
   : nativeImage.createEmpty();
-// Windows taskbar tray needs a small icon (16–32 px); use pre-sized PNG for crispness.
-const TRAY_ICON = fs.existsSync(TRAY_ICON_PATH)
-  ? nativeImage.createFromPath(TRAY_ICON_PATH)
-  : APP_ICON.resize({ width: 32, height: 32 });
+const TRAY_ICON = (() => {
+  const p = fs.existsSync(TRAY_ICON_PATH)
+    ? TRAY_ICON_PATH
+    : fs.existsSync(TRAY_ICON_LEGACY_PATH)
+      ? TRAY_ICON_LEGACY_PATH
+      : null;
+  return p ? nativeImage.createFromPath(p) : APP_ICON.resize({ width: 32, height: 32 });
+})();
 
 // ─── Window State Persistence ────────────────────────────────────────
 
@@ -233,13 +303,53 @@ async function createWindow(): Promise<void> {
     }
   });
 
+  // Shell-level paste hardening (see materializeClipboardImageIfNeeded).
+  // Fires on the keyDown that triggers paste, before the DOM paste event is
+  // synthesized, so the frontend reads already-materialized PNG data.
+  mainWindow.webContents.on("before-input-event", (_event, input) => {
+    if (input.type !== "keyDown") return;
+    const isPaste =
+      ((input.control || input.meta) && input.key.toLowerCase() === "v") ||
+      (input.shift && input.key === "Insert");
+    if (isPaste) materializeClipboardImageIfNeeded();
+  });
+
   await mainWindow.loadURL(url);
   console.log("[main] loadURL resolved");
+}
+
+// ─── Clipboard Paste Hardening ───────────────────────────────────────
+// Windows places copied screenshots / copied images on the clipboard as
+// delayed-rendering CF_BITMAP handles. The locked pi-web frontend reads paste
+// data lazily, so depending on render timing the image sometimes arrives empty
+// -> a broken / transparent attachment thumbnail, and paste "works again" after
+// a session switch re-mounts the input. We cannot edit the locked frontend, so
+// at the shell level we *materialize* the clipboard image into a concrete PNG
+// right before the paste keystroke is dispatched, making the subsequent DOM
+// paste event see stable data. We only act on a pure-image clipboard (no text)
+// so normal text paste and the frontend's own handling are never disturbed.
+function materializeClipboardImageIfNeeded(): void {
+  try {
+    const text = clipboard.readText();
+    if (text && text.trim().length > 0) return; // text present -> leave alone
+    const img = clipboard.readImage();
+    if (!img || img.isEmpty()) return;          // no image -> nothing to do
+    clipboard.writeImage(img);                  // force CF_BITMAP -> PNG
+  } catch {
+    // clipboard quirks must never break typing / pasting
+  }
 }
 
 // ─── Tray ────────────────────────────────────────────────────────────
 
 function createTray(): void {
+  // Rebuilding the tray menu (e.g. after the pairing code changes) used to
+  // create a *second* system-tray icon because the previous Tray instance was
+  // never destroyed. Always tear down the old one first.
+  if (tray) {
+    try { tray.destroy(); } catch { /* ignore */ }
+    tray = null;
+  }
   tray = new Tray(TRAY_ICON);
   tray.setToolTip("Pi Web Desktop");
 
@@ -692,7 +802,7 @@ if (!gotLock) {
           sessionStorePath: path.join(app.getPath("userData"), "mobile-sessions.json"),
         });
         const bridgePort = await mobileBridge.start();
-        console.log(`[main] MobileBridge started on port ${bridgePort}, code: ${mobileBridge.pairingCode}`);
+        console.log(`[main] MobileBridge started on port ${bridgePort}`);
         createTray(); // refresh tray with pairing code
       } catch (err: any) {
         console.error("[main] MobileBridge start failed:", err.message);

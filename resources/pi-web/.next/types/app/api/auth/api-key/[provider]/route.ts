@@ -1,4 +1,4 @@
-// File: /Users/alex/Documents/Workspace/pi-web/app/api/auth/api-key/[provider]/route.ts
+// File: D:\PI-web-desktop\resources\pi-web\app\api\auth\api-key\[provider]\route.ts
 import * as entry from '../../../../../../../app/api/auth/api-key/[provider]/route.js'
 import type { NextRequest } from 'next/server.js'
 

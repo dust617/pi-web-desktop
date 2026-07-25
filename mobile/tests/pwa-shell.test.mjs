@@ -43,12 +43,26 @@ assert.match(html, /const checkUpdate = \(\) => reg\.update\(\)\.catch\(\(\) => 
   "the app must check for an update immediately, not only after five minutes");
 console.log("  ok   service-worker update check runs immediately with updateViaCache=none");
 
+assert.match(swSource, /new AbortController\(\)/, "shell fetch needs an abortable network deadline");
+assert.match(swSource, /setTimeout\(\(\) => controller\.abort\(\), 5000\)/,
+  "shell fetch must fall back to cache within five seconds");
+assert.match(swSource, /event\.request\.method !== "GET"/,
+  "service worker must not intercept non-GET requests");
+console.log("  ok   service-worker network-first path has a bounded GET-only fallback");
+
 assert.match(html, /#inputArea \{ flex:0 0 auto; min-height:0; \}/,
   "composer must not shrink below its content in the body flex layout");
 assert.match(html, /\.content \{ flex:1; min-height:0;/,
   "scroll area must be the flex item that shrinks");
 assert.match(html, /--app-height/, "visual viewport height variable must exist");
 assert.match(html, /visualViewport/, "visual viewport fallback must be wired");
-console.log("  ok   mobile viewport and non-shrinking composer guards are present");
+assert.match(html, /maximum-scale=2\.5,user-scalable=yes/,
+  "viewport must retain bounded pinch zoom accessibility");
+const showChatSource = html.slice(html.indexOf("async function showChat"), html.indexOf("function renderMessages"));
+assert.ok(showChatSource.indexOf("connectSSE(sessionId)") < showChatSource.indexOf("await Promise.all"),
+  "chat SSE must connect before history/state/model requests finish");
+assert.match(html, /function resetSSETransport\(\)[\s\S]*?function closeSSE\(\)/,
+  "transport reconnect cleanup must be separate from full view cleanup");
+console.log("  ok   mobile viewport, early SSE, and non-shrinking composer guards are present");
 
 console.log("\n4 passed, 0 failed");
