@@ -29,28 +29,38 @@ function tryApplyStagedPiWebUpgrade(): void {
   const backupDir = path.join(__dirname, "..", ".backup");
   if (!fs.existsSync(backupDir)) return;
   let stagedDir: string | null = null;
+  let stagedVersion = "0.0.0";
   try {
     const entries = fs.readdirSync(backupDir);
     for (const name of entries) {
       if (/^pi-web-[\d.]+-staged$/.test(name)) {
-        stagedDir = path.join(backupDir, name);
-        break;
+        const pkgPath = path.join(backupDir, name, "package.json");
+        if (fs.existsSync(pkgPath)) {
+          try {
+            const ver = JSON.parse(fs.readFileSync(pkgPath, "utf8")).version as string;
+            // Compare versions and pick the highest
+            if (ver > stagedVersion) {
+              stagedVersion = ver;
+              stagedDir = path.join(backupDir, name);
+            }
+          } catch {
+            // Skip invalid package.json
+          }
+        }
       }
     }
   } catch { return; }
   if (!stagedDir) return;
 
-  const stagedPkg = path.join(stagedDir, "package.json");
   const currentPkg = path.join(__dirname, "..", "resources", "pi-web", "package.json");
-  if (!fs.existsSync(stagedPkg) || !fs.existsSync(currentPkg)) return;
+  if (!fs.existsSync(currentPkg)) return;
 
   let movedCurrentTo: string | null = null;
   try {
-    const stagedVer = JSON.parse(fs.readFileSync(stagedPkg, "utf8")).version as string;
     const currentVer = JSON.parse(fs.readFileSync(currentPkg, "utf8")).version as string;
-    if (stagedVer === currentVer) return; // already up-to-date
+    if (stagedVersion === currentVer) return; // already up-to-date
 
-    console.log(`[main] staged pi-web ${stagedVer} detected (current: ${currentVer}), attempting swap...`);
+    console.log(`[main] staged pi-web ${stagedVersion} detected (current: ${currentVer}), attempting swap...`);
     const targetDir = path.join(__dirname, "..", "resources", "pi-web");
     const oldDir = path.join(backupDir, `pi-web-${currentVer}-old-${Date.now()}`);
 
@@ -66,7 +76,7 @@ function tryApplyStagedPiWebUpgrade(): void {
       movedCurrentTo = null;
       throw swapErr;
     }
-    console.log(`[main] pi-web upgraded ${currentVer} -> ${stagedVer} (old backup: ${oldDir})`);
+    console.log(`[main] pi-web upgraded ${currentVer} -> ${stagedVersion} (old backup: ${oldDir})`);
   } catch (err) {
     console.warn(`[main] staged pi-web swap failed (old runtime preserved): ${err instanceof Error ? err.message : String(err)}`);
     if (movedCurrentTo) {
