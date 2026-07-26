@@ -14,7 +14,8 @@
 - [x] Node.js >=22.19.0 预检 + PI_WEB_HOSTNAME（src/pi-web-runtime.ts）
 - [x] 0.8.1 staged 完成（.backup/pi-web-0.8.1-staged，BUILD_ID: l0CiKzT_81sgMiO7ty15w）
 - [x] MobileBridge 0.8.1 合同测试（48/48 通过）
-- [~] 0.8.1 桌面 smoke（staged 完整，待冷启动触发自动交换 + 验证）
+- [x] 0.8.1 桌面 smoke（自动交换成功，Web UI 正常加载，BUILD_ID: l0CiKzT_81sgMiO7ty15w）
+  - 已知问题：archived-sessions 路由源码存在但未编译（需在干净环境重新构建）
 - [x] 回滚 Gate（docs/pi-web-rollback.md + 自动交换逻辑验证）
 
 ## P2：隧道监督核心
