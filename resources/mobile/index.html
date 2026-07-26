@@ -58,6 +58,16 @@
   --tool-bg: #1f2937;
   --radius: 12px;
   --safe-bottom: max(env(safe-area-inset-bottom, 0px), 12px);
+  /* Top safe area — ADAPTIVE via the display-mode media query (see the
+     @media block below :root). Goal: do NOT waste vertical space in a normal
+     browser tab, while still clearing the notch / status bar in standalone /
+     fullscreen PWA mode. Baseline here covers display-mode: browser:
+       env() resolves to 0 when the browser chrome already reserved the
+       status-bar space, so we keep a tiny 8px breathing gap (max(env,8px)) —
+       enough that the header is not glued to the very top, but small so the
+       usable page stays large. If a phone browser runs an immersive status
+       bar (env>0), env wins and the header clears it. */
+  --safe-top: max(env(safe-area-inset-top, 0px), 8px);
   --app-height: 100dvh;
   --input-area-height: 112px;
   --shadow: rgba(0, 0, 0, 0.5);
@@ -65,6 +75,15 @@
   --thumb-bg: rgba(224, 224, 224, 0.58);
   --thumb-shadow: rgba(0, 0, 0, 0.28);
   --on-accent: #000;
+}
+/* Standalone / fullscreen PWA (display-mode: standalone | fullscreen |
+   window-controls-overlay): the status / task bar overlays the page, so we
+   add a fixed ~1cm (49px) on top of the env() notch inset to clear the notch
+   AND the status / task bar — 49px is the on-device-confirmed 'just right'
+   offset. In a normal browser tab this rule does NOT apply, so --safe-top
+   stays at the small max(env,8px) baseline above and the page stays large. */
+@media (display-mode: standalone), (display-mode: fullscreen), (display-mode: window-controls-overlay) {
+  :root { --safe-top: calc(env(safe-area-inset-top, 0px) + 49px); }
 }
 /* ── Light theme (matches desktop pi-web light) ─ */
 html.light {
@@ -96,7 +115,7 @@ html,body { height:100%; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI"
 body { display:flex; flex-direction:column; overflow:hidden; height:100vh; height:var(--app-height, 100dvh); }
 
 /* ── Header ─ */
-.header { display:flex; align-items:center; gap:8px; padding:12px 16px; background:var(--surface); border-bottom:1px solid var(--border); min-height:52px; flex-shrink:0; }
+.header { display:flex; align-items:center; gap:8px; padding:calc(12px + var(--safe-top)) 16px 12px; background:var(--surface); border-bottom:1px solid var(--border); min-height:calc(52px + var(--safe-top)); flex-shrink:0; }
 .header .back { background:none; border:none; color:var(--accent); font-size:20px; padding:4px 8px; cursor:pointer; }
 .header .title { flex:1; font-size:16px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .header .status { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
@@ -116,7 +135,7 @@ body { display:flex; flex-direction:column; overflow:hidden; height:100vh; heigh
 @keyframes viewSlideInForward { from { opacity:0.35; transform:translateX(22px); } to { opacity:1; transform:translateX(0); } }
 @keyframes viewSlideInBack { from { opacity:0.35; transform:translateX(-22px); } to { opacity:1; transform:translateX(0); } }
 /* ── Pull-to-refresh indicator ── */
-.pull-refresh-indicator { position:fixed; top:52px; left:0; right:0; text-align:center; padding:12px; color:var(--accent); font-size:13px; font-weight:600; opacity:0; transform:translateY(-100%); transition:opacity 0.2s, transform 0.2s; pointer-events:none; z-index:60; background:var(--surface); }
+.pull-refresh-indicator { position:fixed; top:calc(52px + var(--safe-top)); left:0; right:0; text-align:center; padding:12px; color:var(--accent); font-size:13px; font-weight:600; opacity:0; transform:translateY(-100%); transition:opacity 0.2s, transform 0.2s; pointer-events:none; z-index:60; background:var(--surface); }
 .pull-refresh-indicator.visible { opacity:1; transform:translateY(0); }
 .pull-refresh-indicator.refreshing { animation:pullPulse 0.8s infinite; }
 @keyframes pullPulse { 0%,100%{opacity:0.6} 50%{opacity:1} }
@@ -280,7 +299,7 @@ body { display:flex; flex-direction:column; overflow:hidden; height:100vh; heigh
    high-contrast translucent white with a dark hairline so it is visible the
    instant it appears on the dark background (the old 30%-grey was not). */
 .scroll-rail {
-  position: fixed; right: 2px; top: 56px;
+  position: fixed; right: 2px; top: calc(56px + var(--safe-top));
   bottom: calc(var(--input-area-height, 0px) + 8px);
   /* Wide enough to host the fat, finger-friendly thumb (21px) plus its inset
      without clipping, and to give a generous click-to-jump target. The rail
@@ -367,7 +386,7 @@ body { display:flex; flex-direction:column; overflow:hidden; height:100vh; heigh
 
 <script>
 // ─── State ───────────────────────────────────────────────────────────
-const PWA_VERSION = "pi-mobile-v44"; // keep in sync with sw.js VERSION
+const PWA_VERSION = "pi-mobile-v46"; // keep in sync with sw.js VERSION
 const API = "/mobile/api/v1";
 const NAV_STATE_KEY = "pi-mobile-nav";
 let currentView = "login"; // login | projects | sessions | chat
