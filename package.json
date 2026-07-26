@@ -7,7 +7,7 @@
     "build": "tsc",
     "start": "npm run build && electron .",
     "dev": "tsc --watch",
-    "test:mobile": "npm run build && node mobile/tests/runtime.test.mjs && node mobile/tests/bff.test.mjs && node mobile/tests/pwa-stream.test.mjs && node mobile/tests/pwa-shell.test.mjs",
+    "test:mobile": "npm run build && node mobile/tests/runtime.test.mjs && node mobile/tests/bff.test.mjs && node mobile/tests/pwa-stream.test.mjs && node mobile/tests/pwa-navigation.test.mjs && node mobile/tests/pwa-shell.test.mjs",
     "test:pi-web": "npm --prefix resources/pi-web test",
     "test:package": "node mobile/tests/package-parity.test.mjs",
     "memory:check": "node scripts/check-memory.mjs",

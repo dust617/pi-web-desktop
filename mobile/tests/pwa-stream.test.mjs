@@ -29,12 +29,13 @@ const context = vm.createContext({
   alert: () => {},
   localStorage: { getItem: () => null, setItem: () => {} },
   navigator: { vibrate: () => {} },
-  window: {},
+  window: { confirm: () => true, prompt: () => null },
   document: {
     visibilityState: "visible",
     activeElement: null,
     documentElement: { classList: { add() {}, remove() {}, contains: () => false } },
     getElementById: () => null,
+    addEventListener: () => {},
   },
 });
 vm.runInContext(source.slice(0, initAt), context, { filename: "resources/mobile/index.html" });
@@ -59,6 +60,9 @@ check("replayed final message is deduplicated", `currentMessages.length === 2`);
 vm.runInContext(`currentMessages = [{role:"user",content:"hello",_optimistic:true}];`, context);
 vm.runInContext(`handleSSEEvent({type:"message_end",message:{role:"user",timestamp:3,content:"hello"}});`, context);
 check("authoritative user event replaces optimistic bubble", `currentMessages.length === 1 && currentMessages[0].timestamp === 3 && !currentMessages[0]._optimistic`);
+
+vm.runInContext(`handleSSEEvent({type:"message_end",message:{role:"custom",customType:"project-memory-brief",display:false,content:"hidden brief"}});`, context);
+check("display:false memory brief never appears as a mobile system message", `currentMessages.length === 1 && currentMessages.every((message) => message.role !== "custom")`);
 
 vm.runInContext(`currentMessages = []; streamingMsg = null; handleSSEEvent({type:"message_update",message:{role:"assistant",timestamp:4,content:[{type:"text",text:"partial"}]}});`, context);
 check("message_update updates only the current streaming snapshot", `currentMessages.length === 0 && streamingMsg.content[0].text === "partial"`);
@@ -112,6 +116,71 @@ check("terminal unauthorized returns to login", `(() => {
   handleSSEEvent({type:"error",code:"UNAUTHORIZED",terminal:true,message:"expired"});
   return entered && currentView === "login";
 })()`);
+
+const extensionConfirmForwarded = await vm.runInContext(`(async () => {
+  currentView = "chat"; currentSessionId = "s1";
+  let confirmCalls = 0, apiCalls = 0, captured = null, release;
+  window.confirm = () => { confirmCalls++; return true; };
+  api = (path, opts) => { apiCalls++; captured = {path, body:JSON.parse(opts.body)}; return new Promise((resolve) => { release = resolve; }); };
+  const request = {type:"extension_ui_request",id:"ui-confirm-1",method:"confirm",title:"Cross-session request",message:"Continue?"};
+  handleSSEEvent(request);
+  handleSSEEvent(request);
+  const deduped = confirmCalls === 1 && apiCalls === 1;
+  release({ok:true});
+  await Promise.resolve(); await Promise.resolve();
+  return deduped && captured.path.endsWith("/sessions/s1/ui-response") && captured.body.id === "ui-confirm-1" && captured.body.confirmed === true;
+})()`, context);
+if (!extensionConfirmForwarded) throw new Error("FAIL extension confirmation is shown once and forwarded");
+pass++;
+console.log("  ok   extension confirmation is shown once and forwarded");
+
+const extensionResponseRetries = await vm.runInContext(`(async () => {
+  currentView = "chat"; currentSessionId = "s1";
+  let calls = 0, captured = null;
+  window.confirm = () => true;
+  api = async (path, opts) => {
+    calls++;
+    if (calls === 1) throw new Error("transient offline");
+    captured = {path, body:JSON.parse(opts.body)};
+    return {ok:true};
+  };
+  handleSSEEvent({type:"extension_ui_request",id:"ui-retry-1",method:"confirm",title:"Retry",message:"Continue?"});
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  return calls === 2 && captured.body.confirmed === true && !activeExtensionUiIds.has("ui-retry-1");
+})()`, context);
+if (!extensionResponseRetries) throw new Error("FAIL transient extension UI response is retried");
+pass++;
+console.log("  ok   transient extension UI response is retried");
+
+const extensionResponseRecoversAfterExhaustion = await vm.runInContext(`(async () => {
+  currentView = "chat"; currentSessionId = "s1";
+  let calls = 0, reconnects = 0;
+  window.confirm = () => true;
+  alert = () => {};
+  api = async () => { calls++; throw new Error("offline"); };
+  connectSSE = (sessionId) => { if (sessionId === "s1") reconnects++; };
+  handleSSEEvent({type:"extension_ui_request",id:"ui-reconnect-1",method:"confirm",title:"Reconnect",message:"Continue?"});
+  await new Promise((resolve) => setTimeout(resolve, 1_050));
+  return calls === 3 && reconnects === 1 && !activeExtensionUiIds.has("ui-reconnect-1");
+})()`, context);
+if (!extensionResponseRecoversAfterExhaustion) throw new Error("FAIL exhausted extension UI response forces request replay reconnect");
+pass++;
+console.log("  ok   exhausted extension UI response forces request replay reconnect");
+
+const selectValueRestricted = await vm.runInContext(`(async () => {
+  currentView = "chat"; currentSessionId = "s1";
+  const answers = ["999", "2"];
+  let warnings = 0, captured = null;
+  window.prompt = () => answers.shift() ?? null;
+  alert = () => { warnings++; };
+  api = async (path, opts) => { captured = JSON.parse(opts.body); return {ok:true}; };
+  handleSSEEvent({type:"extension_ui_request",id:"ui-select-1",method:"select",title:"Choose",options:["safe-a","safe-b"]});
+  await Promise.resolve(); await Promise.resolve();
+  return warnings === 1 && captured.value === "safe-b" && !activeExtensionUiIds.has("ui-select-1");
+})()`, context);
+if (!selectValueRestricted) throw new Error("FAIL select response is restricted to an advertised option");
+pass++;
+console.log("  ok   select response is restricted to an advertised option");
 
 const staleHistoryIgnored = await vm.runInContext(`(async () => {
   currentMessages = [];
@@ -199,14 +268,16 @@ pass++;
 console.log("  ok   identical history reconciliation does not show false new-message badge");
 
 const authoritativeModelSync = vm.runInContext(`(() => {
-  const a = {value:"a",dataset:{provider:"prov",modelId:"old"}};
-  const b = {value:"b",dataset:{provider:"prov",modelId:"tag:latest"}};
-  const sel = {options:[a,b],value:"a",dataset:{currentValue:"a"}};
-  document.getElementById = (id) => id === "modelSelect" ? sel : null;
+  const makeClassList = () => { const values = new Set(); return {add:(v)=>values.add(v),remove:(v)=>values.delete(v),contains:(v)=>values.has(v)}; };
+  const a = {dataset:{provider:"prov",modelId:"old"},textContent:"Old",classList:makeClassList()};
+  const b = {dataset:{provider:"prov",modelId:"tag:latest"},textContent:"Latest",classList:makeClassList()};
+  const list = {querySelectorAll:()=>[a,b]};
+  const trigger = {textContent:"Old"};
+  document.getElementById = (id) => id === "modelList" ? list : (id === "modelTrigger" ? trigger : null);
   syncModelSelect({model:{provider:"prov",id:"tag:latest"}});
-  return sel.value === "b" && sel.dataset.currentValue === "b";
+  return b.classList.contains("selected") && !a.classList.contains("selected") && trigger.textContent === "Latest";
 })()`, context);
-if (!authoritativeModelSync) throw new Error("FAIL authoritative model state updates selector losslessly");
+if (!authoritativeModelSync) throw new Error("FAIL authoritative model state updates custom selector losslessly");
 pass++;
 console.log("  ok   authoritative model state updates selector losslessly");
 
