@@ -48,3 +48,10 @@ goofish-mcp-server/
 
 # Sensitive infra/ops docs (VPS IP, Xray/frp config, vendor IDs) - NEVER commit
 mobile/vps-relay/
+
+# Local desensitization report (lists secrets to filter) - NEVER commit
+DESENSITIZE_REPORT.md
+
+# Publish pipeline local-only artifacts (real secrets + temp snapshot) - NEVER commit
+publish/desensitize-map.json
+publish/.tmp/
