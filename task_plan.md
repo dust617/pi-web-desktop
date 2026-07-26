@@ -9,18 +9,19 @@
 - [x] 清理空规划文件 + 重建紧凑版 planning files
 
 ## P1：pi-web 0.8.1 锁定适配
-- [ ] pi-web:stage 强制脚本
-- [ ] Downstream patch manifest
-- [ ] MobileBridge 0.8.1 合同测试
-- [ ] Node.js >=22.19.0 预检 + PI_WEB_HOSTNAME
-- [ ] 0.8.1 桌面 smoke
-- [ ] 回滚 Gate
+- [x] pi-web:stage 强制脚本（scripts/pi-web-stage.mjs）
+- [x] Downstream patch manifest（scripts/pi-web-patch-manifest.json）
+- [x] Node.js >=22.19.0 预检 + PI_WEB_HOSTNAME（src/pi-web-runtime.ts）
+- [x] 0.8.1 staged 完成（.backup/pi-web-0.8.1-staged，BUILD_ID: l0CiKzT_81sgMiO7ty15w）
+- [x] MobileBridge 0.8.1 合同测试（48/48 通过）
+- [~] 0.8.1 桌面 smoke（staged 完整，待冷启动触发自动交换 + 验证）
+- [x] 回滚 Gate（docs/pi-web-rollback.md + 自动交换逻辑验证）
 
 ## P2：隧道监督核心
-- [ ] ManagedProcess 通用模块
-- [ ] TunnelSupervisor 状态机
-- [ ] FrpcAdapter
-- [ ] Mock frpc + test:tunnel
+- [x] ManagedProcess 通用模块（src/managed-process.ts）
+- [x] TunnelSupervisor 状态机（src/tunnel-supervisor.ts）
+- [x] FrpcAdapter（src/frpc-adapter.ts）
+- [x] Mock frpc + test:tunnel（scripts/mock-frpc.js + tests/tunnel.test.mjs，29/29 通过）
 
 ## P3：安全配置与打包
 - [ ] safeStorage 秘密管理

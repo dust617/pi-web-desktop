@@ -32,12 +32,46 @@ export function findFreePort(): Promise<number> {
   });
 }
 
+/** Minimum Node.js version required by pi-web 0.8.1+ */
+const MIN_NODE_VERSION = "22.19.0";
+
+/** Parse a Node.js version string into [major, minor, patch] */
+function parseNodeVersion(version: string): [number, number, number] | null {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version);
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+/** Check if a Node.js version meets the minimum requirement */
+function isNodeVersionSupported(version: string): boolean {
+  const current = parseNodeVersion(version);
+  const minimum = parseNodeVersion(MIN_NODE_VERSION);
+  if (!current || !minimum) return false;
+  for (let i = 0; i < minimum.length; i++) {
+    if (current[i] > minimum[i]) return true;
+    if (current[i] < minimum[i]) return false;
+  }
+  return true;
+}
+
 /** Find system node.exe via PATH (never use Electron's process.execPath) */
 function findSystemNode(): string {
   try {
     const result = execSync("where node", { encoding: "utf8" }).trim().split(/\r?\n/)[0];
-    if (result && fs.existsSync(result)) return result;
-  } catch {
+    if (result && fs.existsSync(result)) {
+      // Verify Node.js version meets minimum requirement
+      const versionOutput = execSync(`"${result}" --version`, { encoding: "utf8" }).trim();
+      const version = versionOutput.replace(/^v/, "");
+      if (!isNodeVersionSupported(version)) {
+        throw new Error(
+          `Node.js 版本过低：当前 ${version}，需要 >=${MIN_NODE_VERSION}。\n` +
+          `请升级 Node.js：https://nodejs.org/`
+        );
+      }
+      return result;
+    }
+  } catch (err: any) {
+    if (err.message?.includes("Node.js 版本过低")) throw err;
     // fall through
   }
   throw new Error("找不到系统 node.exe，请确认 Node.js 已安装并在 PATH 中。");
@@ -180,7 +214,9 @@ export class PiWebRuntime {
       {
         cwd: cwd || undefined,
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, PI_WEB_NO_OPEN: "1", PORT: String(port), HOSTNAME: hostname },
+        // pi-web 0.8.1+ uses PI_WEB_HOSTNAME instead of HOSTNAME to avoid
+        // pollution from the system HOSTNAME env var.
+        env: { ...process.env, PI_WEB_NO_OPEN: "1", PORT: String(port), PI_WEB_HOSTNAME: hostname },
         windowsHide: true,
       }
     );

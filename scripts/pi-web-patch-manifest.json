@@ -1,0 +1,51 @@
+{
+  "$schema": "Downstream patches applied on top of upstream @agegr/pi-web tarball",
+  "upstream": {
+    "version": "0.8.1",
+    "gitTag": "v0.8.1",
+    "gitTagPeeledCommit": "b4f4576b890de92b1def79a56ad1fb2841ee84c1",
+    "npmGitHead": "ae58c82bae41b2583a3569299d4995f591a13b5c",
+    "shasum": "056334d2410364a5b1a873547a60f9e02b52ba7e",
+    "integrity": "sha512-UYunaSj2lDAC8EOiyV9VenQwOVFZ2xB6FBrkyYev/2sGNMiRr5fVkU0ktGfOyUhKciVo2lqBxwoz/M8RV6z35A==",
+    "engines": ">=22.19.0",
+    "piCodingAgentVersion": "0.82.1"
+  },
+  "patches": [
+    {
+      "id": "outputFileTracingRoot",
+      "origin": "843cdd3",
+      "purpose": "Scope Next.js outputFileTracingRoot to the pi-web package directory so Electron packaging resolves server externals correctly",
+      "upstreamStatus": "not-absorbed",
+      "files": ["next.config.ts"],
+      "test": "npm run build succeeds; packaged app resolves pi-coding-agent server externals",
+      "removalCondition": "Upstream sets outputFileTracingRoot in published next.config.ts or electron-builder handles it"
+    },
+    {
+      "id": "archived-sessions-route",
+      "origin": "c3c646e",
+      "purpose": "Add GET/PUT /api/archived-sessions route for mobile session archive management",
+      "upstreamStatus": "not-in-upstream",
+      "files": ["app/api/archived-sessions/route.ts"],
+      "test": "mobile/tests/package-parity.test.mjs; GET returns {ids:[]}; PUT persists and re-reads",
+      "removalCondition": "Archive management migrated into authenticated MobileBridge BFF"
+    },
+    {
+      "id": "test-script",
+      "origin": "local",
+      "purpose": "Add test script entry for downstream unit tests (lib/*.test.mjs, components/*.test.mjs)",
+      "upstreamStatus": "not-in-upstream",
+      "files": ["package.json"],
+      "test": "npm test runs downstream tests",
+      "removalCondition": "Upstream includes equivalent test script"
+    }
+  ],
+  "droppedPatches": [
+    {
+      "id": "markdown-local-images",
+      "origin": "b61188a",
+      "purpose": "Preview local images in Markdown",
+      "upstreamStatus": "partially-absorbed",
+      "action": "Do not re-apply; verify upstream behavior covers click-to-open, max size, UNC paths via staged smoke test"
+    }
+  ]
+}
