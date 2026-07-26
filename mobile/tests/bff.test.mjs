@@ -50,6 +50,7 @@ const mock = http.createServer((req, res) => {
   if (req.method === "GET" && p === "/api/agent/s1/events") {
     res.writeHead(200, { "content-type": "text/event-stream" });
     res.write(`data: ${JSON.stringify({ type: "connected" })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: "extension_ui_request", id: "ui-1", method: "confirm", title: "Cross-session request", message: "Continue with session 550e8400-e29b-41d4-a716-446655440000?" })}\n\n`);
     const hugeSnapshot = "duplicate-snapshot-".repeat(4000);
     res.write(`data: ${JSON.stringify({ type: "message_update", message: { role: "assistant", content: [{ type: "text", text: hugeSnapshot }] }, assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Z", partial: { role: "assistant", content: [{ type: "text", text: hugeSnapshot }] } } })}\n\n`);
     setTimeout(() => res.end(), 100);
@@ -67,6 +68,7 @@ const mock = http.createServer((req, res) => {
     if (parts[2] === "big") { const pad = "x".repeat(9 * 1024 * 1024); return json(res, { sessionId: "big", context: { messages: [{ role: "user", content: pad }] }, info: { messageCount: 1 } }); }
     const messages = Array.from({ length: 125 }, (_, i) => ({ role: "user", content: `history-${i}` }));
     messages.push({ role: "system", content: "system-body-".repeat(300) });
+    messages.push({ role: "custom", customType: "project-memory-brief", display: false, content: "HIDDEN_CROSS_SESSION_BRIEF" });
     messages.push({ role: "toolResult", toolName: "read", content: "tool-body-".repeat(300) });
     messages.push({ role: "assistant", content: [
       { type: "thinking", thinking: "reason-".repeat(100), signature: "SECRET_SIGNATURE" },
@@ -190,6 +192,7 @@ async function main() {
   check("T10 history -> capped recent 120 messages", r.status === 200 && history?.messages?.length === 120 && history.truncated === true);
   check("T10 history requests deferred thinking + media", lastHistorySearch.includes("deferThinking=1") && lastHistorySearch.includes("deferMedia=1"), lastHistorySearch);
   check("T10 hidden signatures/base64 never reach mobile", !historyText.includes("SECRET_SIGNATURE") && !historyText.includes("SECRET_BASE64"));
+  check("T10 display:false custom messages never reach mobile", !historyText.includes("HIDDEN_CROSS_SESSION_BRIEF"));
   check("T10 outer toolResult body is capped", history.messages.at(-2)?.role === "toolResult" && history.messages.at(-2)?.content?.length < 1000);
   check("T10 non-rendered system body is minimized", history.messages.find((message) => message.role === "system")?.content?.length < 600);
 
@@ -197,9 +200,20 @@ async function main() {
   check("T11 history >8MiB -> 413", r.status === 413, "got " + r.status);
 
   lastAgentBody = null;
-  r = await req(P, "POST", "/mobile/api/v1/sessions/s1/messages", { headers: { Cookie: cookie, Origin: ORIGIN_OK }, body: { message: "hi there" } });
-  check("T12 message good origin -> 200", r.status === 200, r.text().slice(0, 120));
-  check("T12 upstream received prompt", !!lastAgentBody && lastAgentBody.includes("hi there"));
+  const crossSessionPrompt = "请检查会话 550e8400-e29b-41d4-a716-446655440000 并回答问题";
+  r = await req(P, "POST", "/mobile/api/v1/sessions/s1/messages", { headers: { Cookie: cookie, Origin: ORIGIN_OK }, body: { message: crossSessionPrompt } });
+  check("T12 full Session ID message good origin -> 200", r.status === 200, r.text().slice(0, 120));
+  check("T12 upstream received full Session ID prompt unchanged", JSON.parse(lastAgentBody ?? "null")?.message === crossSessionPrompt);
+
+  lastAgentBody = null;
+  r = await req(P, "POST", "/mobile/api/v1/sessions/s1/ui-response", { headers: { Cookie: cookie, Origin: ORIGIN_OK }, body: { id: "ui-1", confirmed: true } });
+  check("T12b extension UI response -> 200", r.status === 200, r.text().slice(0, 120));
+  check("T12b upstream receives only allowlisted UI response", JSON.parse(lastAgentBody ?? "null")?.type === "extension_ui_response" && JSON.parse(lastAgentBody)?.id === "ui-1" && JSON.parse(lastAgentBody)?.confirmed === true);
+  const cjkEditorValue = "界".repeat(8_000);
+  r = await req(P, "POST", "/mobile/api/v1/sessions/s1/ui-response", { headers: { Cookie: cookie, Origin: ORIGIN_OK }, body: { id: "ui-editor", value: cjkEditorValue } });
+  check("T12b max-length non-ASCII editor response fits byte limit", r.status === 200 && JSON.parse(lastAgentBody)?.value === cjkEditorValue, "got " + r.status);
+  r = await req(P, "POST", "/mobile/api/v1/sessions/s1/ui-response", { headers: { Cookie: cookie, Origin: ORIGIN_OK }, body: { id: "ui-1", arbitrary: "command" } });
+  check("T12b invalid UI response is rejected", r.status === 400, "got " + r.status);
 
   r = await req(P, "POST", "/mobile/api/v1/sessions/s1/messages", { headers: { Cookie: cookie, Origin: ORIGIN_BAD }, body: { message: "x" } });
   check("T13 message bad origin -> 403", r.status === 403);
@@ -217,6 +231,7 @@ async function main() {
   check("T17 SSE 200 + event-stream", sse.status === 200 && /event-stream/.test(sse.ct), JSON.stringify(sse).slice(0, 120));
   check("T17 SSE emits connected event", sse.connected, sse.raw || "");
   check("T17 SSE forwards compact text delta", sse.raw.includes('"type":"text_delta"') && sse.raw.includes('"delta":"Z"'), sse.raw.slice(0, 300));
+  check("T17 SSE forwards bounded extension UI request", sse.raw.includes('"type":"extension_ui_request"') && sse.raw.includes('"id":"ui-1"') && sse.raw.includes('"method":"confirm"'), sse.raw.slice(0, 500));
   check("T17 SSE strips cumulative snapshot/partial", !sse.raw.includes("duplicate-snapshot") && !sse.raw.includes('"partial"') && sse.raw.length < 2000, `bytes=${sse.raw.length}`);
 
   r = await req(P, "POST", "/mobile/auth/revoke-all", { headers: { Cookie: cookie, Origin: ORIGIN_OK }, body: {} });

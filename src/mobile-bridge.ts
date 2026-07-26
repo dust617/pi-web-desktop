@@ -233,6 +233,10 @@ export function slimMobileMessage(message: any): any {
   };
 }
 
+function isHiddenMobileMessage(message: any): boolean {
+  return message?.role === "custom" && message?.display === false;
+}
+
 /** Convert cumulative desktop agent snapshots into a compact mobile delta DTO. */
 export function optimizeMobileSSEEvent(event: any): any | null {
   if (!event || typeof event !== "object") return null;
@@ -241,6 +245,7 @@ export function optimizeMobileSSEEvent(event: any): any | null {
     return null; // mobile already shows tool-call progress from assistant deltas
   }
   if (type === "message_start" || type === "message_end") {
+    if (isHiddenMobileMessage(event.message)) return null;
     return { type, message: slimMobileMessage(event.message) };
   }
   if (type === "message_update") {
@@ -261,6 +266,21 @@ export function optimizeMobileSSEEvent(event: any): any | null {
     return { type, assistantMessageEvent: compact };
   }
   if (type === "connected" || type === "agent_start" || type === "agent_end") return { type };
+  if (type === "extension_ui_request") {
+    const method = String(event.method ?? "");
+    if (!["confirm", "select", "input", "editor"].includes(method) || typeof event.id !== "string") return null;
+    return {
+      type,
+      id: event.id.slice(0, 128),
+      method,
+      title: String(event.title ?? "扩展请求").slice(0, 300),
+      ...(typeof event.message === "string" ? { message: event.message.slice(0, 2_000) } : {}),
+      ...(typeof event.placeholder === "string" ? { placeholder: event.placeholder.slice(0, 500) } : {}),
+      ...(typeof event.prefill === "string" ? { prefill: event.prefill.slice(0, 8_000) } : {}),
+      ...(Array.isArray(event.options) ? { options: event.options.slice(0, 50).map((option: unknown) => String(option).slice(0, 500)) } : {}),
+      ...(typeof event.expiresAt === "number" ? { expiresAt: event.expiresAt } : {}),
+    };
+  }
   if (type === "model_select") return { type, model: event.model };
   if (type === "thinking_level_select") return { type, level: event.level };
   if (type === "error") return { type, code: event.code, terminal: !!event.terminal, message: String(event.message ?? "Agent stream error").slice(0, 500) };
@@ -733,6 +753,10 @@ export class MobileBridge {
     m = matchRoute("/mobile/api/v1/sessions/:sessionId/messages", pathname);
     if (m && method === "POST") return this.handleSendMessage(m.sessionId, req, res);
 
+    // POST /mobile/api/v1/sessions/:sessionId/ui-response
+    m = matchRoute("/mobile/api/v1/sessions/:sessionId/ui-response", pathname);
+    if (m && method === "POST") return this.handleExtensionUiResponse(m.sessionId, req, res);
+
     // POST /mobile/api/v1/sessions/:sessionId/abort
     m = matchRoute("/mobile/api/v1/sessions/:sessionId/abort", pathname);
     if (m && method === "POST") return this.handleAbort(m.sessionId, res);
@@ -796,7 +820,9 @@ export class MobileBridge {
   // Mobile history keeps only renderer-visible fields; hidden reasoning,
   // signatures, media and tool bodies are bounded before crossing the tunnel.
   private slimMessages(messages: any[]): any[] {
-    return Array.isArray(messages) ? messages.map(slimMobileMessage) : messages;
+    return Array.isArray(messages)
+      ? messages.filter((message) => !isHiddenMobileMessage(message)).map(slimMobileMessage)
+      : messages;
   }
 
   // ── Health ─────────────────────────────────────────────────────
@@ -1243,6 +1269,45 @@ export class MobileBridge {
         errorResponse(res, upstream.status >= 400 && upstream.status < 500 ? upstream.status : 502,
           "UPSTREAM_UNAVAILABLE", text || `pi-web returned ${upstream.status}`);
         return;
+      }
+      jsonResponse(res, 200, { ok: true });
+    } catch (err: any) {
+      if (err.code === "BRIDGE_STARTING") return errorResponse(res, 503, err.code, err.message);
+      errorResponse(res, 502, "UPSTREAM_UNAVAILABLE", err.message);
+    }
+  }
+
+  // ── Extension UI Response ──────────────────────────────────────
+
+  private async handleExtensionUiResponse(sessionId: string, req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    let body: any;
+    try {
+      body = parseJsonBody(await readBody(req, 32 * 1024));
+    } catch (err: any) {
+      if (err.message === "BODY_TOO_LARGE") return errorResponse(res, 413, "INVALID_REQUEST", "UI response too large (max 32KB)");
+      return errorResponse(res, 400, "INVALID_REQUEST", "Invalid JSON body");
+    }
+
+    const id = body?.id;
+    if (typeof id !== "string" || id.length < 1 || id.length > 128) {
+      return errorResponse(res, 400, "INVALID_REQUEST", "Missing or invalid UI request id");
+    }
+    let response: Record<string, unknown>;
+    if (typeof body.confirmed === "boolean") response = { confirmed: body.confirmed };
+    else if (body.cancelled === true) response = { cancelled: true };
+    else if (typeof body.value === "string" && body.value.length <= 8_000) response = { value: body.value };
+    else return errorResponse(res, 400, "INVALID_REQUEST", "Missing or invalid UI response value");
+
+    try {
+      const upstream = await this.piWebFetch(`/api/agent/${encodeURIComponent(sessionId)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "extension_ui_response", id, ...response }),
+      });
+      if (!upstream.ok) {
+        const text = await upstream.text().catch(() => "");
+        return errorResponse(res, upstream.status >= 400 && upstream.status < 500 ? upstream.status : 502,
+          "UPSTREAM_UNAVAILABLE", text || `pi-web returned ${upstream.status}`);
       }
       jsonResponse(res, 200, { ok: true });
     } catch (err: any) {
