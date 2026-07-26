@@ -381,11 +381,34 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           (file) =>
             new Promise<AttachedImage>((resolve, reject) => {
               const reader = new FileReader();
-              reader.onload = () => {
+              reader.onload = async () => {
                 const result = reader.result as string;
                 // result is "data:<mime>;base64,<data>"
-                const base64 = result.split(",")[1];
-                resolve({ data: base64, mimeType: file.type, previewUrl: URL.createObjectURL(file) });
+                let base64 = result.split(",")[1];
+                let mimeType = file.type;
+
+                // Fallback: Windows drag-drop from Snipping Tool / browser
+                // can produce File objects with empty data (lazy rendering).
+                // Read the real file from disk via Electron nativeImage.
+                if (!base64 && typeof window !== "undefined") {
+                  const desktop = (window as unknown as { __piDesktop?: { getDroppedFilePaths?: (f: File[]) => string[]; readImageAsPng?: (p: string) => Promise<string | null> } }).__piDesktop;
+                  if (desktop?.getDroppedFilePaths && desktop.readImageAsPng) {
+                    const paths = desktop.getDroppedFilePaths([file]);
+                    if (paths[0]) {
+                      const png = await desktop.readImageAsPng(paths[0]);
+                      if (png) { base64 = png; mimeType = "image/png"; }
+                    }
+                  }
+                }
+
+                // Build the preview blob from the verified base64 payload,
+                // NOT from the original File (delayed-rendering shell objects
+                // can produce empty / transparent blobs).
+                const binary = atob(base64);
+                const bytes = new Uint8Array(binary.length);
+                for (let j = 0; j < binary.length; j++) bytes[j] = binary.charCodeAt(j);
+                const previewBlob = new Blob([bytes], { type: mimeType });
+                resolve({ data: base64, mimeType, previewUrl: URL.createObjectURL(previewBlob) });
               };
               reader.onerror = reject;
               reader.readAsDataURL(file);

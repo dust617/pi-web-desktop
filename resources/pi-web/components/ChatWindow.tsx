@@ -194,7 +194,8 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
 
   const {
     loading, error, messages, entryIds, streamState,
-    agentRunning, bashRunning, pendingBash, modelNames, modelList, modelError, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, thinkingLevel,
+    agentRunning, showScrollToBottom, scrollToBottomAndResume,
+    bashRunning, pendingBash, modelNames, modelList, modelError, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, thinkingLevel,
     retryInfo, contextUsage, forkingEntryId,
     isCompacting, compactError, compactResult, displayModel: displayModelValue, sessionStats,
     slashCommands, slashCommandsLoading, queuedMessages,
@@ -704,14 +705,39 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
               />
             )}
 
+            <div ref={messagesEndRef} />
+
             {agentRunning && (
               <div style={{ height: scrollContainerRef.current ? scrollContainerRef.current.clientHeight : "80vh" }} />
             )}
-
-            <div ref={messagesEndRef} />
             </div>
           </div>
         </div>
+        {showScrollToBottom && (
+          <button
+            onClick={scrollToBottomAndResume}
+            style={{
+              position: "absolute",
+              bottom: 16,
+              left: "50%",
+              transform: "translateX(-50%)",
+              zIndex: 50,
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "6px 16px",
+              borderRadius: 9999,
+              border: "1px solid var(--border)",
+              background: "var(--bg-secondary, var(--bg))",
+              color: "var(--text)",
+              fontSize: 13,
+              cursor: "pointer",
+              boxShadow: "0 2px 8px rgba(0,0,0,0.18)",
+            }}
+          >
+            <span style={{ fontSize: 15, lineHeight: 1 }}>↓</span> 回到底部
+          </button>
+        )}
         {isMobile ? null : (
           <ChatMinimap
             messages={messages}

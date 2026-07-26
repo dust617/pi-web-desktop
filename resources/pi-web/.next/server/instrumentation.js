@@ -1,1 +1,4 @@
-"use strict";(()=>{var a={};a.id=6183,a.ids=[6183],a.modules={9956:a=>{a.exports=require("undici")},53861:(a,b,c)=>{async function d(){let{configureHttpDispatcher:a}=await c.e(2349).then(c.bind(c,42349));a()}c.r(b),c.d(b,{register:()=>d})},78474:a=>{a.exports=require("node:events")}};var b=require("./webpack-runtime.js");b.C(a);var c=b(b.s=53861);module.exports=c})();
+var R=require("./chunks/[turbopack]_runtime.js")("server/instrumentation.js")
+R.c("server/chunks/_0jq-dmw._.js")
+R.m(769449)
+module.exports=R.m(769449).exports

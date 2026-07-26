@@ -8,6 +8,7 @@ import * as path from "path";
 import * as fs from "fs";
 import { PiWebRuntime } from "./pi-web-runtime";
 import { MobileBridge, resolveAllowedOrigins } from "./mobile-bridge";
+import { FrpcGuardian, guardianStateLabel, formatUptime } from "./frpc-guardian";
 
 interface ProjectOpenRequest {
   requestId: string;
@@ -142,6 +143,7 @@ function tryApplyStagedPiWebUpgrade(): void {
 tryApplyStagedPiWebUpgrade();
 
 let mobileBridge: MobileBridge | null = null;
+const frpcGuardian = new FrpcGuardian();
 let mainWindow: BrowserWindow | null = null;
 let windowReadyPromise: Promise<void> | null = null;
 let tray: Tray | null = null;
@@ -418,6 +420,13 @@ function createTray(): void {
   tray = new Tray(TRAY_ICON);
   tray.setToolTip("Pi Web Desktop");
 
+  // ── 隧道守护状态 ──
+  const gs = frpcGuardian.getStatus();
+  const stateIcon = gs.state === "running" ? "●" : gs.state === "blocked" ? "✖" : gs.state === "stopped" ? "○" : "◌";
+  const tunnelLabel = gs.state === "running"
+    ? `隧道: ${stateIcon} ${guardianStateLabel(gs.state)} (PID ${gs.pid}, ${formatUptime(gs.uptimeMs)})`
+    : `隧道: ${stateIcon} ${guardianStateLabel(gs.state)}${gs.lastError ? ` - ${gs.lastError.slice(0, 40)}` : ""}`;
+
   const contextMenu = Menu.buildFromTemplate([
     {
       label: "显示窗口",
@@ -445,6 +454,46 @@ function createTray(): void {
         }
       },
     },
+    { type: "separator" },
+    // ── 开机自启 ──
+    {
+      label: "开机自启",
+      type: "checkbox",
+      checked: app.getLoginItemSettings().openAtLogin,
+      click: (item) => {
+        app.setLoginItemSettings({ openAtLogin: item.checked });
+      },
+    },
+    { type: "separator" },
+    // ── frpc 隧道守护 ──
+    {
+      label: tunnelLabel,
+      enabled: false,
+    },
+    ...(gs.state === "stopped"
+      ? [{
+          label: "启动隧道守护",
+          click: () => { frpcGuardian.start().catch((e: any) => dialog.showErrorBox("隧道启动失败", e.message)); },
+        }]
+      : []),
+    ...(gs.state === "running" || gs.state === "restarting" || gs.state === "starting"
+      ? [{
+          label: "停止隧道守护",
+          click: () => { frpcGuardian.stop().catch(() => {}); },
+        }]
+      : []),
+    ...(gs.state === "blocked"
+      ? [{
+          label: "解除熔断并重试",
+          click: () => { frpcGuardian.unblockAndRestart().catch((e: any) => dialog.showErrorBox("隧道重试失败", e.message)); },
+        }]
+      : []),
+    ...(gs.state !== "stopped"
+      ? [{
+          label: "重启隧道",
+          click: () => { frpcGuardian.restart().catch((e: any) => dialog.showErrorBox("隧道重启失败", e.message)); },
+        }]
+      : []),
     { type: "separator" },
     {
       label: `移动端配对码: ${mobileBridge?.pairingCode ?? "..."}`,
@@ -542,6 +591,23 @@ ipcMain.handle("check-file-exists", (event, filePath: string): boolean => {
     return fs.existsSync(filePath);
   } catch {
     return false;
+  }
+});
+
+// ─── Image drag-drop fallback ────────────────────────────────────────
+// Windows drag-drop from Snipping Tool / browser can hand out File objects
+// with empty or undecodable data (raw DIB, lazy shell virtual files).
+// Read the real file from disk via nativeImage and re-encode as PNG.
+ipcMain.handle("read-image-as-png", (event, filePath: string): string | null => {
+  assertLocalSender(event);
+  if (typeof filePath !== "string" || filePath.length === 0) return null;
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const img = nativeImage.createFromPath(filePath);
+    if (img.isEmpty()) return null;
+    return img.toPNG().toString("base64");
+  } catch {
+    return null;
   }
 });
 
@@ -835,6 +901,16 @@ if (!gotLock) {
     buildMenu();
     createTray();
 
+    // ── frpc 隧道守护：随桌面端启动，状态变化时刷新托盘 ──
+    frpcGuardian.on("stateChange", () => createTray());
+    if (frpcGuardian.isConfigured()) {
+      frpcGuardian.start().catch((err) =>
+        console.error("[main] frpc guardian start failed:", err.message),
+      );
+    } else {
+      console.warn("[main] frpc not configured, guardian idle");
+    }
+
     // Crash recovery: restart on a new port, then explicitly restore the project session.
     runtime.onCrash = (code, signal) => {
       dialog
@@ -897,6 +973,7 @@ if (!gotLock) {
     if (pendingProjectTimer) clearInterval(pendingProjectTimer);
     if (mainWindow) saveWindowState(mainWindow);
     mobileBridge?.stop().catch(() => {});
+    frpcGuardian.stop().catch(() => {});
     runtime.stop();
   });
 }

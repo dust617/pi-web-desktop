@@ -8,8 +8,7 @@
   "segmentPaths": [
     "/_tree",
     "/_full",
-    "/_global-error/__PAGE__",
-    "/_global-error",
+    "/__PAGE__",
     "/_index",
     "/_head"
   ]

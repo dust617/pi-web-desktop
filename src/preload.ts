@@ -31,6 +31,14 @@ const api = {
       .map((f) => { try { return webUtils.getPathForFile(f); } catch { return ""; } })
       .filter((p): p is string => p.length > 0);
   },
+
+  /**
+   * Fallback for lazy/empty drag-drop File objects (Windows Snipping Tool,
+   * browser image drag, shell virtual files). Reads the file from disk via
+   * Electron nativeImage and returns PNG base64, or null on failure.
+   */
+  readImageAsPng: (filePath: string): Promise<string | null> =>
+    ipcRenderer.invoke("read-image-as-png", filePath),
 };
 
 contextBridge.exposeInMainWorld("piDesktop", api);
@@ -120,15 +128,19 @@ function init(): void {
     "drop",
     (e) => {
       const files = Array.from(e.dataTransfer?.files ?? []);
-      if (files.length > 0) {
-        // Prevent the browser's default file-drop action (navigate to image /
-        // open file) which would replace the pi-web UI entirely.
-        e.preventDefault();
-        // stopImmediatePropagation prevents the useDragDrop patch from also
-        // inserting paths, avoiding duplicates
-        e.stopImmediatePropagation();
-        handleDrop(files);
-      }
+      if (files.length === 0) return;
+      // Always prevent the browser's default file-drop action (navigate to
+      // image / open file) which would replace the pi-web UI entirely.
+      e.preventDefault();
+      // Let the pi-web frontend handle IMAGE drops as real image attachments
+      // (its useDragDrop + processImageFiles flow). Only intercept non-image
+      // files and insert their paths as text.
+      const allImages = files.every((f) => f.type.startsWith("image/"));
+      if (allImages) return; // React onDrop will process these
+      // stopImmediatePropagation prevents the React handler from also firing,
+      // avoiding duplicates for non-image file path insertion.
+      e.stopImmediatePropagation();
+      handleDrop(files);
     },
     { capture: true }
   );

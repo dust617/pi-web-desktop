@@ -157,6 +157,7 @@ export type ThinkingLevelOption = "auto" | "off" | "minimal" | "low" | "medium" 
 
 const PROGRAMMATIC_SCROLL_IGNORE_MS = 700;
 const USER_SCROLL_INTENT_MS = 1200;
+const NEAR_BOTTOM_THRESHOLD = 100;
 const PROMPT_SETTLE_INITIAL_DELAY_MS = 800;
 const PROMPT_SETTLE_POLL_MS = 600;
 const PROMPT_SETTLE_MAX_MS = 20_000;
@@ -368,6 +369,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [extensionStatuses, setExtensionStatuses] = useState<ExtensionStatusItem[]>([]);
   const [extensionWidgets, setExtensionWidgets] = useState<ExtensionWidgetItem[]>([]);
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessages>({ steering: [], followUp: [] });
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const sessionIdRef = useRef<string | null>(session?.id ?? null);
@@ -1472,8 +1474,23 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [setToolPresetState]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
     ignoreProgrammaticScrollUntilRef.current = Date.now() + PROGRAMMATIC_SCROLL_IGNORE_MS;
-    messagesEndRef.current?.scrollIntoView({ behavior });
+    // Target the content bottom (messagesEndRef), not the absolute bottom
+    // (which includes the agent-running spacer).
+    const anchor = messagesEndRef.current;
+    let targetTop: number;
+    if (anchor) {
+      const anchorRect = anchor.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
+      targetTop = container.scrollTop + (anchorRect.bottom - containerRect.bottom) + 8;
+    } else {
+      targetTop = container.scrollHeight - container.clientHeight;
+    }
+    container.scrollTo({ top: Math.max(0, targetTop), behavior });
+    completionScrollAllowedRef.current = true;
+    setShowScrollToBottom(false);
   }, []);
 
   const scrollUserMsgToTop = useCallback(() => {
@@ -1494,10 +1511,31 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, []);
 
   const handleScrollPositionChange = useCallback(() => {
-    if (!agentRunningRef.current) return;
     if (Date.now() < ignoreProgrammaticScrollUntilRef.current) return;
-    if (Date.now() > userScrollIntentUntilRef.current) return;
-    completionScrollAllowedRef.current = false;
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    // Determine distance from the content bottom (messagesEndRef).
+    const anchor = messagesEndRef.current;
+    let distanceFromBottom: number;
+    if (anchor) {
+      distanceFromBottom = anchor.getBoundingClientRect().bottom - container.getBoundingClientRect().bottom;
+    } else {
+      distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    }
+    const nearBottom = distanceFromBottom < NEAR_BOTTOM_THRESHOLD;
+
+    if (nearBottom) {
+      // User scrolled back to bottom → re-enable auto-scroll.
+      if (!completionScrollAllowedRef.current) {
+        completionScrollAllowedRef.current = true;
+        setShowScrollToBottom(false);
+      }
+    } else if (agentRunningRef.current && Date.now() < userScrollIntentUntilRef.current) {
+      // User intentionally scrolled up during an agent run → pause auto-scroll.
+      completionScrollAllowedRef.current = false;
+      setShowScrollToBottom(true);
+    }
   }, []);
 
   // Load session on mount
@@ -1594,6 +1632,62 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, [messages.length, agentRunning, scrollToBottom, scrollUserMsgToTop]);
 
+  // ── Streaming auto-scroll ──────────────────────────────────────────
+  // streamState identity changes on every SSE chunk. When the user is at
+  // the bottom (completionScrollAllowed), keep the content bottom in view
+  // using rAF to batch multiple updates per frame.
+  //
+  // CRITICAL: we must NOT set ignoreProgrammaticScrollUntilRef here. During
+  // streaming this effect fires on every token (~50ms), which would keep
+  // the ignore-window permanently active and block all user scroll
+  // detection — the user would be unable to scroll up. Instead, we check
+  // userScrollIntentUntilRef FIRST and yield to the user.
+  useEffect(() => {
+    if (!streamState.isStreaming) return;
+    const raf = requestAnimationFrame(() => {
+      // If the user recently interacted with scroll (wheel/touch/key),
+      // give them priority — don't yank them back to the bottom.
+      if (Date.now() < userScrollIntentUntilRef.current) {
+        // Check if they scrolled away from the bottom.
+        const c = scrollContainerRef.current;
+        if (c) {
+          const anchor = messagesEndRef.current;
+          const dist = anchor
+            ? anchor.getBoundingClientRect().bottom - c.getBoundingClientRect().bottom
+            : c.scrollHeight - c.scrollTop - c.clientHeight;
+          if (dist >= NEAR_BOTTOM_THRESHOLD) {
+            completionScrollAllowedRef.current = false;
+            setShowScrollToBottom(true);
+          }
+        }
+        return; // skip auto-scroll during user intent
+      }
+      if (!completionScrollAllowedRef.current) return;
+      const container = scrollContainerRef.current;
+      if (!container) return;
+      const anchor = messagesEndRef.current;
+      if (anchor) {
+        const anchorRect = anchor.getBoundingClientRect();
+        const containerRect = container.getBoundingClientRect();
+        container.scrollTop = Math.max(0, container.scrollTop + (anchorRect.bottom - containerRect.bottom) + 8);
+      } else {
+        container.scrollTop = container.scrollHeight - container.clientHeight;
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [streamState]);
+
+  // Hide the scroll-to-bottom button when the agent finishes.
+  useEffect(() => {
+    if (!agentRunning) setShowScrollToBottom(false);
+  }, [agentRunning]);
+
+  const scrollToBottomAndResume = useCallback(() => {
+    completionScrollAllowedRef.current = true;
+    setShowScrollToBottom(false);
+    scrollToBottom("smooth");
+  }, [scrollToBottom]);
+
   // Load model list
   useEffect(() => {
     const controller = new AbortController();
@@ -1640,7 +1734,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   return {
     // State
     data, loading, error, activeLeafId, messages, entryIds, streamState,
-    agentRunning, modelNames, modelList, modelError, modelThinkingLevels, modelThinkingLevelMaps, newSessionModel, toolPreset, thinkingLevel,
+    agentRunning, showScrollToBottom, scrollToBottomAndResume,
+    modelNames, modelList, modelError, modelThinkingLevels, modelThinkingLevelMaps, newSessionModel, toolPreset, thinkingLevel,
     retryInfo, contextUsage, systemPrompt, forkingEntryId,
     isCompacting, compactError, compactResult, currentModel, displayModel, sessionStats,
     slashCommands, slashCommandsLoading, queuedMessages,
