@@ -1,11 +1,124 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { open, stat, unlink } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
-import { dirname, join, relative } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { dirname, join, relative, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { CONFIG_DIR_NAME, withFileMutationQueue, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { calendarAgeDays, findMemoryControlRisk, findMemorySecretRisk, isMemoryDateExpired } from "../../../scripts/memory-contract.mjs";
+
+// --- Memory contract: cache-busted dynamic loader ---
+// Static ESM imports are cached per-process. When the extension is reloaded
+// (e.g. /reload) but the Node process survives, the old namespace persists
+// even if the contract file changed, causing "X is not a function" errors.
+// We solve this by dynamically importing with a content-hash query parameter.
+
+type MemoryContract = {
+	MEMORY_CONTRACT_VERSION: number;
+	calendarAgeDays: (isoDate: string, now?: Date) => number;
+	findMemoryControlRisk: (text: string) => string | null;
+	findMemorySecretRisk: (text: string) => string | null;
+	isMemoryDateExpired: (isoDate: string, ttlDays: number, now?: Date) => boolean;
+};
+
+const CONTRACT_PATH = resolve(__dirname, "../../../scripts/memory-contract.mjs");
+const REQUIRED_EXPORTS = ["MEMORY_CONTRACT_VERSION", "calendarAgeDays", "findMemoryControlRisk", "findMemorySecretRisk", "isMemoryDateExpired"] as const;
+
+let _contract: MemoryContract | null = null;
+let _contractLoadError: string | null = null;
+
+function loadMemoryContract(): MemoryContract {
+	// Synchronous cache: return the previously loaded contract if the file
+	// hasn't changed. We detect changes via content hash.
+	let content: string;
+	try {
+		content = readFileSync(CONTRACT_PATH, "utf8");
+	} catch (err: any) {
+		_contractLoadError = `无法读取 memory-contract.mjs: ${err?.message ?? err}`;
+		throw new Error(_contractLoadError);
+	}
+	const hash = createHash("sha256").update(content).digest("hex").slice(0, 16);
+	if (_contract && (_contract as any).__hash === hash) return _contract;
+
+	// Synchronous bootstrap: we need the contract before any async work.
+	// Use a blocking dynamic import via the sync module loader workaround:
+	// create a unique file URL with a cache-busting query param.
+	const url = pathToFileURL(CONTRACT_PATH).href + `?v=${hash}`;
+
+	// Node's import() is async, but we can use createRequire for .mjs files
+	// with cache-busting. Instead, we use a top-level await alternative:
+	// store a promise and resolve it before first use.
+	throw new ContractReloadNeeded(url, hash);
+}
+
+class ContractReloadNeeded {
+	readonly url: string;
+	readonly hash: string;
+	constructor(url: string, hash: string) {
+		this.url = url;
+		this.hash = hash;
+	}
+}
+
+async function ensureContract(): Promise<MemoryContract> {
+	let content: string;
+	try {
+		content = readFileSync(CONTRACT_PATH, "utf8");
+	} catch (err: any) {
+		_contractLoadError = `无法读取 memory-contract.mjs: ${err?.message ?? err}`;
+		throw new Error(_contractLoadError);
+	}
+	const hash = createHash("sha256").update(content).digest("hex").slice(0, 16);
+	if (_contract && (_contract as any).__hash === hash) return _contract;
+
+	const url = pathToFileURL(CONTRACT_PATH).href + `?v=${hash}`;
+	let mod: any;
+	try {
+		mod = await import(url);
+	} catch (err: any) {
+		_contractLoadError = `memory-contract.mjs 动态加载失败: ${err?.message ?? err}`;
+		throw new Error(_contractLoadError);
+	}
+
+	// Validate required exports
+	for (const name of REQUIRED_EXPORTS) {
+		if (typeof mod[name] !== "function" && typeof mod[name] !== "number") {
+			_contractLoadError = `memory-contract.mjs 缺少导出: ${name}（类型: ${typeof mod[name]}）。合约版本不一致，请重启进程。`;
+			throw new Error(_contractLoadError);
+		}
+	}
+
+	_contract = {
+		MEMORY_CONTRACT_VERSION: mod.MEMORY_CONTRACT_VERSION,
+		calendarAgeDays: mod.calendarAgeDays,
+		findMemoryControlRisk: mod.findMemoryControlRisk,
+		findMemorySecretRisk: mod.findMemorySecretRisk,
+		isMemoryDateExpired: mod.isMemoryDateExpired,
+	};
+	(_contract as any).__hash = hash;
+	_contractLoadError = null;
+	return _contract;
+}
+
+function contract(): MemoryContract {
+	if (!_contract) {
+		// Synchronous access before first async call: attempt a sync load.
+		// This will throw ContractReloadNeeded which is caught by the caller
+		// and retried via ensureContract().
+		try {
+			loadMemoryContract();
+		} catch (err) {
+			if (err instanceof ContractReloadNeeded) {
+				throw new Error(
+					"memory-contract 尚未异步加载。这是内部错误，请重启进程。" +
+					(_contractLoadError ? ` (${_contractLoadError})` : "")
+				);
+			}
+			throw err;
+		}
+	}
+	return _contract!;
+}
 
 type MemoryType = "fact" | "decision" | "constraint" | "failure_pattern";
 
@@ -72,7 +185,8 @@ function wrapMemoryBlock(tag: string, body: string, maxChars: number): string {
 }
 
 function findMemoryContentRisk(text: string): string | null {
-	return findMemorySecretRisk(text) ?? findMemoryControlRisk(text);
+	const c = contract();
+	return c.findMemorySecretRisk(text) ?? c.findMemoryControlRisk(text);
 }
 
 function requireSafeMemoryText(text: string): void {
@@ -150,7 +264,7 @@ function currentFacts(facts: Fact[]): Fact[] {
 }
 
 function isExpired(fact: Fact): boolean {
-	return isMemoryDateExpired(fact.verified, fact.ttlDays);
+	return contract().isMemoryDateExpired(fact.verified, fact.ttlDays);
 }
 
 function activeFacts(facts: Fact[]): Fact[] {
@@ -174,7 +288,7 @@ function sectionBody(markdown: string, heading: string): string {
 function statusWarning(status: string): string {
 	const metadata = status.match(/^> Updated: \d{4}-\d{2}-\d{2} \| Verify-by: (\d{4}-\d{2}-\d{2})$/m);
 	if (!metadata) return "⚠ STATUS 缺少有效复验期限，只能作为历史线索；先验证运行时状态。";
-	if (isMemoryDateExpired(metadata[1], 0)) {
+	if (contract().isMemoryDateExpired(metadata[1], 0)) {
 		return `⚠ STATUS 已超过复验期限 ${metadata[1]}，只能作为历史线索；先验证运行时状态。`;
 	}
 	return "";
@@ -312,7 +426,7 @@ function validateFactDocument(text: string): void {
 		if ((section.match(/^> Source: .+$/gm) ?? []).length !== 1) throw new Error(`拒绝保存：${heading[1]} 必须且只能包含一个 Source。`);
 	}
 	for (const fact of facts) {
-		const ageDays = calendarAgeDays(fact.verified);
+		const ageDays = contract().calendarAgeDays(fact.verified);
 		if (!Number.isFinite(ageDays) || ageDays < 0) throw new Error(`拒绝保存：${fact.id} 的 Verified 日期无效或位于未来。`);
 		if (fact.replaces) {
 			if (!idSet.has(fact.replaces) || fact.replaces === fact.id) throw new Error(`拒绝保存：${fact.id} 的 Replaces 引用无效。`);
@@ -403,6 +517,8 @@ export default function memoryGuard(pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
+		// Preload the memory contract with cache-busting to avoid stale ESM namespace.
+		await ensureContract();
 		memoryDir = join(ctx.cwd, CONFIG_DIR_NAME, "memory");
 		statusFile = join(memoryDir, "STATUS.md");
 		factsFile = join(memoryDir, "FACTS.md");
@@ -411,6 +527,7 @@ export default function memoryGuard(pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		if (!ready() || !isSubstantivePrompt(event.prompt) || hasInjectedBrief(ctx)) return;
+		await ensureContract();
 		return {
 			message: {
 				customType: "project-memory-brief",
@@ -455,6 +572,7 @@ export default function memoryGuard(pi: ExtensionAPI) {
 		}),
 		async execute(_toolCallId, params) {
 			if (!ready()) throw new Error("此项目未初始化记忆目录，无法加载项目记忆。");
+			await ensureContract();
 			const rawStatus = readText(statusFile);
 			const rawFacts = readText(factsFile);
 			const readRisk = findMemoryReadRisk([["STATUS.md", rawStatus], ["FACTS.md", rawFacts]]);
@@ -496,6 +614,7 @@ export default function memoryGuard(pi: ExtensionAPI) {
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			if (!ready()) throw new Error("此项目未初始化记忆目录，无法保存项目记忆。");
+			await ensureContract();
 			requireSingleLine("fact", params.fact);
 			requireSingleLine("source", params.source);
 			requireSafeMemoryText([params.fact, params.source].join("\n"));
@@ -539,6 +658,7 @@ export default function memoryGuard(pi: ExtensionAPI) {
 		parameters: Type.Object({}),
 		async execute() {
 			if (!ready()) throw new Error("此项目未初始化记忆目录，无法查看候选观察。");
+			await ensureContract();
 			const rawInbox = readText(inboxFile);
 			const readRisk = findMemoryReadRisk([["INBOX.jsonl", rawInbox]]);
 			if (readRisk) {

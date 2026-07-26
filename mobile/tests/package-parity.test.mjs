@@ -22,6 +22,15 @@ const files = [
 for (const [rel, archivePath] of files) {
   const current = fs.readFileSync(new URL(rel, root));
   const packaged = asar.extractFile(asarPath, archivePath);
+  // Node v24 assert.deepEqual on mismatched Buffer sizes throws a misleading
+  // "Array buffer allocation failed" instead of a normal assertion error.
+  // Compare length first for a clear diagnostic, then content.
+  if (packaged.length !== current.length) {
+    assert.fail(
+      `packaged ${rel} size mismatch: asar has ${packaged.length} bytes, working tree has ${current.length} bytes. ` +
+      `Run "npm run dist" to rebuild the asar from current sources.`
+    );
+  }
   assert.deepEqual(packaged, current, `packaged ${rel} differs from the reviewed working tree`);
   console.log("  ok   packaged " + rel + " matches current build");
 }

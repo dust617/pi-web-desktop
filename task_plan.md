@@ -1,27 +1,41 @@
-# 任务：pi-web-desktop 公开发布（桌面端 + 移动端子项目）
+# v0.2.0 工作清单
 
-## 目标
-本地保留**未脱敏完整版**；通过发布管线生成**脱敏快照 + 全新干净历史**推送到公开 GitHub。
-桌面端与移动端一起发布，移动端作为子项目。重写 README（详细功能/特点，标明移动端适配）。
-起草给 pi-web 主项目（agegr/pi-web）的推荐说明（@ 参考），发布前需用户确认。
+> 详细规划见 `NEXT_VERSION_PLAN.md`。本文件仅跟踪优先级和状态。
 
-## 关键决策
-- 不用 git filter-repo（未安装）。改用「快照 + 全新历史」：旧推送历史本就干净，force-push 干净历史即可。
-- 脱敏替换映射存于 gitignored 的 `publish/desensitize-map.json`（含真实值，仅本地）。
-- 发布管线脚本 `scripts/publish-github.mjs`（tracked，不含真实秘密，读 map 文件）。
-- 内部运维文档（STATUS_HANDOFF / 审计报告 / handoff / planning / 日志）不发布。
+## P0：修复与测试基线
+- [x] 记忆 contract 热重载修复（cache-busted 动态加载 + MEMORY_CONTRACT_VERSION=1）
+- [x] test:package asar 分配失败修复（Node v24 Buffer deepEqual bug workaround + 重建 asar）
+- [x] test:mobile 验证（65/65 通过，code 127 为瞬态问题）
+- [x] 清理空规划文件 + 重建紧凑版 planning files
 
-## 阶段
-- [x] 阶段1：全量敏感信息扫描（当前树 + 历史 + 已推送版本）— 完成
-- [x] 阶段2：确认已推送 GitHub 版本干净 — 完成（origin/main 树/历史 0 命中）
-- [ ] 阶段3：编写发布管线（desensitize-map.json + publish-github.mjs + .gitignore）
-- [ ] 阶段4：重写 README（桌面+移动，详细功能），整理 mobile/README 子项目说明
-- [ ] 阶段5：本地生成脱敏快照并复扫验证 0 命中（推送前）
-- [ ] 阶段6：用户确认后 force-push 公开仓库
-- [ ] 阶段7：起草给 agegr/pi-web 的推荐 issue/discussion（用户确认后发布）
+## P1：pi-web 0.8.1 锁定适配
+- [ ] pi-web:stage 强制脚本
+- [ ] Downstream patch manifest
+- [ ] MobileBridge 0.8.1 合同测试
+- [ ] Node.js >=22.19.0 预检 + PI_WEB_HOSTNAME
+- [ ] 0.8.1 桌面 smoke
+- [ ] 回滚 Gate
 
-## 遇到的错误
-| 错误 | 次数 | 解决 |
-|------|------|------|
-| memory-save 报 findMemoryControlRisk is not a function | 1 | memory-guard 扩展内部 bug，改用本地 DESENSITIZE_REPORT.md 落盘 |
-| git log -p 扫描被 mermaid SVG/打包 JS 坐标污染 | 多次 | 改用 git grep <tree> 精确扫描，限制文件类型 |
+## P2：隧道监督核心
+- [ ] ManagedProcess 通用模块
+- [ ] TunnelSupervisor 状态机
+- [ ] FrpcAdapter
+- [ ] Mock frpc + test:tunnel
+
+## P3：安全配置与打包
+- [ ] safeStorage 秘密管理
+- [ ] frpc 二进制供应链
+- [ ] HTTPS 拓扑验证
+
+## P4：生命周期与稳定性
+- [ ] DesktopLifecycleCoordinator
+- [ ] HealthAggregator + 诊断日志
+- [ ] 稳定性测试（sleep/wake/soak）
+
+## P5：桌面体验
+- [ ] 设置页 + 托盘菜单增强
+- [ ] 旧 BAT 迁移工具
+
+## P6：发布
+- [ ] 版本升级 0.2.0 + installer/portable
+- [ ] 文档 + beta feature flag

@@ -1,3 +1,7 @@
+// Bump this when adding/removing/renaming exports. The extension uses it for
+// cache-busted dynamic import and live-vs-fresh doctor checks.
+export const MEMORY_CONTRACT_VERSION = 1;
+
 export const MEMORY_SECRET_PATTERNS = [
   ['private key', /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/i],
   ['API token', /\b(?:sk|ghp|github_pat)-[A-Za-z0-9._-]{16,}\b/i],
