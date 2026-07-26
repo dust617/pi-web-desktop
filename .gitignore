@@ -17,6 +17,7 @@ nul
 # Local Pi operational memory and cold exports (never commit)
 .pi/memory/
 .pi/session-audit/
+.pi/images/
 archive/
 /STATUS.md
 /KEYSTORE.md

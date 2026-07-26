@@ -1,3 +1,3 @@
-# Task Plan
+# 当前任务
 
-No active complex task.
+> 无活动复杂任务。开始新任务时覆盖本文件；复杂任务完成后运行 `npm run memory:archive -- <slug>`。

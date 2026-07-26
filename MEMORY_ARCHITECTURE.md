@@ -1,6 +1,6 @@
 # Pi-Web-Desktop 记忆架构
 
-> 版本: 2026-07-24。目标是跨 session 连续、容量有界、无秘密值、能在 provider/模型故障时恢复。
+> 版本: 2026-07-26。目标是跨 session 连续、容量有界、无秘密值、能在 provider/模型故障时恢复。
 
 ## 1. Pi 实际加载机制
 
@@ -10,7 +10,7 @@ Pi 0.81.1 启动时自动加载：
 2. 从文件系统根到 cwd，每层最多一个 `AGENTS.md/AGENTS.MD/CLAUDE.md/CLAUDE.MD`；
 3. 同目录中 `AGENTS.md` 优先。
 
-这些内容进入所有 Pi 模型的同一 system prompt。`STATUS.md`、`FACTS.md`、计划和 archive 都不会被 Pi 原生自动加载；它们只能被 AGENTS 指令要求显式读取。模型切换不会触发资源重载；修改 AGENTS 后应执行 `/reload` 或开新 session。
+这些内容进入所有 Pi 模型的同一 system prompt。`STATUS.md`、`FACTS.md`、计划和 archive 不会被 Pi 原生自动加载；本项目由 `.pi/extensions/memory-guard/` 在首个实质请求自动注入有界 Brief，领域细节再用 `memory-recall` 读取。模型切换不会触发资源重载；修改 AGENTS 或 Extension 后应执行 `/reload` 或开新 session。
 
 同一 Pi session 的 GPT/Qwen 共用活动分支、system prompt 和 compaction 摘要，并不存在按模型分开的项目记忆。项目 `AGENTS.md` 应视作可能被 Codex 等其他工具共享；Pi 私有的 `~/.pi/agent/` 不能假设被其他工具读取。
 
@@ -19,13 +19,13 @@ Pi 0.81.1 启动时自动加载：
 发生冲突时按以下顺序处理：
 
 1. **重新验证的运行状态/真实配置**；
-2. `.pi/memory/STATUS.md`：当前状态与最多 5 个下一步；
+2. `.pi/memory/STATUS.md`：当前状态与最多 6 个下一步；
 3. `.pi/memory/FACTS.md`：跨任务稳定事实和凭据位置；
 4. 当前任务的 `task_plan.md`、`findings.md`、`progress.md`；
 5. 专题 runbook/设计文档；
 6. `archive/` 与 session transcript：只作历史证据。
 
-一个事实只在一个活动文件中保存详情；其他文件使用路径或事实编号引用。发现冲突时先复验，再原位替换旧事实，禁止追加两个互相矛盾的版本。
+一个当前事实只允许一个活动版本；其他文件使用路径或事实编号引用。更新事实时用新条目的 `Replaces: F-xxx` 替代当前版本，旧条目只供追溯且不参与 recall。发现冲突时先复验再替代，禁止保留两个活动真相。
 
 ## 3. 文件职责与硬限制
 
@@ -34,7 +34,7 @@ Pi 0.81.1 启动时自动加载：
 | 全局 `~/.pi/agent/AGENTS.md` | 跨项目通用 Pi 安全规则 | 2 KiB / 40 行 | 稳定、极少变更 |
 | 项目 `AGENTS.md` | 构建、安全、记忆入口 | 4 KiB / 80 行 | 可提交，禁止动态事实/秘密 |
 | `.pi/memory/STATUS.md` | 当前快照、阻塞、6 个下一步 | 2 KiB / 32 行 | 覆写；运行事实 7 天复验 |
-| `.pi/memory/FACTS.md` | 稳定拓扑、配置路径、结论 | 5 KiB / 80 行 | 原位更新；每节带 Verified/TTL |
+| `.pi/memory/FACTS.md` | 稳定拓扑、配置路径、结论 | 64 KiB / 800 行（约 100 条） | `memory-save` 追加；Source/Verified/TTL/Replaces |
 | `task_plan.md` | 当前复杂任务步骤 | 4 KiB / 80 行 | 每个任务一份 |
 | `findings.md` | 当前任务证据/决策 | 12 KiB / 20 条 | 任务完成整包归档 |
 | `progress.md` | 当前任务最近里程碑 | 2 KiB / 8 条 | 任务完成整包归档 |
@@ -46,15 +46,16 @@ Pi 0.81.1 启动时自动加载：
 
 ### 新独立 session
 
-1. Pi 自动取得 AGENTS。
-2. 若请求依赖项目既有状态，先运行 `npm run memory:check`。
-3. 只读 `.pi/memory/STATUS.md` 与 `FACTS.md`；简单无关问题不加载任务归档。
-4. 复杂任务再读当前三件套。
+1. Pi 自动取得 AGENTS；纯问候不触发项目记忆。
+2. 首个实质请求由 memory-guard 注入 STATUS 摘要与少量匹配事实；Brief 按当前 session ID 去重，fork 会获得新 Brief。
+3. 已有 Brief 时不重复做无标签 recall；需要领域细节才调用 `memory-recall(tags)`。
+4. 复杂任务再读当前三件套；修改记忆前后运行 `npm run memory:check`。
 
 ### 写入
 
 - 新当前状态：原位覆写 STATUS，不追加历史。
-- 新稳定事实：更新 FACTS 对应节并刷新 `Verified/TTL`。
+- 新稳定事实：用 `memory-save` 写入，必须提供安全 Source；更新用 `Replaces`，只允许替代当前版本。
+- FACTS/INBOX 写入经过进程内队列、跨进程锁和原子替换；不要绕过工具并发改写。
 - 当前任务证据：写 findings；里程碑写 progress；计划变化写 task_plan。
 - 每次修改后运行 `npm run memory:check`；校验失败时不得删除 session 或继续归档。
 
@@ -79,7 +80,7 @@ Pi 0.81.1 启动时自动加载：
 
 ## 7. 凭据与 Git
 
-记忆中只允许符号引用、被忽略文件路径和“待轮换”状态。禁止凭据 UUID、密码、API token、cookie、私钥、VLESS URL、六位配对码以及 `secret=...` 值。
+记忆中只允许符号引用、被忽略文件路径和“待轮换”状态。禁止凭据 UUID、密码、API token、认证头、cookie、私钥、VLESS URL、六位配对码以及 `secret=...` 值。保存参数必须为单行，防止注入 FACTS 结构；Brief/recall/review 在读取时再次扫描，发现风险即停止输出原文并提示安全清理。
 
 旧工作区和 Git 历史曾出现凭据样式值。清理工作树和 `.gitignore` 不能抹掉历史；仍有效的值必须轮换。是否重写已共享 Git 历史必须单独评估，不能在本次迁移中自动执行。
 
@@ -91,6 +92,6 @@ Pi 0.81.1 启动时自动加载：
 
 ## 9. 自动校验
 
-`npm run memory:check` 检查：字节/行/条目上限、过期日期、遗留 STATUS/KEYSTORE、秘密模式、临时文件、归档总量以及 `.gitignore`。它只报告并失败，不自动删除数据。
+`npm run memory:check` 检查：字节/行/条目上限、活动事实 TTL、Fact ID/Replaces、遗留 STATUS/KEYSTORE、整个记忆文本层的秘密模式、临时文件、归档总量以及 `.gitignore`。被替代事实不再因 TTL 阻塞校验，但仍检查格式、引用和敏感信息。`npm run test:memory` 验证 Extension 注入、召回、保存、安全拒绝和并发写入。
 
 这套机制刻意不做“无限自动记忆”：活动层始终小，超限时失败关闭并要求归档/合并，冷层按需检索。

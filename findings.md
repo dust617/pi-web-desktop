@@ -1,3 +1,3 @@
-# Findings
+# 当前任务发现
 
-No active findings.
+> 无活动复杂任务。最多 20 条/12 KiB；完成后随任务整包归档。

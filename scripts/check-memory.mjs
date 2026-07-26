@@ -2,17 +2,18 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { calendarAgeDays, findMemoryControlRisk, findMemorySecretRisk, isMemoryDateExpired } from './memory-contract.mjs';
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const defaultRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const root = process.env.PI_MEMORY_CHECK_ROOT ? path.resolve(process.env.PI_MEMORY_CHECK_ROOT) : defaultRoot;
 const today = new Date();
-today.setHours(0, 0, 0, 0);
 const errors = [];
 const warnings = [];
 
 const specs = [
   ['AGENTS.md', 4096, 80, true],
   ['.pi/memory/STATUS.md', 2048, 32, true],
-  ['.pi/memory/FACTS.md', 5120, 80, true],
+  ['.pi/memory/FACTS.md', 65536, 800, true],
   ['task_plan.md', 4096, 80, true],
   ['findings.md', 12288, 160, true],
   ['progress.md', 2048, 40, true],
@@ -44,6 +45,10 @@ function inspectFile(file, maxBytes, maxLines, required = false) {
 for (const spec of specs) inspectFile(...spec);
 for (const [file, bytes, lines] of globalFiles) inspectFile(file, bytes, lines, false);
 
+for (const required of ['.pi/extensions/memory-guard/index.ts', 'scripts/memory-contract.mjs']) {
+  if (!fs.existsSync(path.join(root, required))) errors.push(`${required}: missing`);
+}
+
 for (const legacy of ['STATUS.md', 'KEYSTORE.md']) {
   if (fs.existsSync(path.join(root, legacy))) {
     errors.push(`${legacy}: legacy duplicate exists; use .pi/memory instead`);
@@ -54,7 +59,7 @@ const status = loaded.get(path.join(root, '.pi/memory/STATUS.md')) ?? '';
 const verifyBy = status.match(/^> Updated: \d{4}-\d{2}-\d{2} \| Verify-by: (\d{4}-\d{2}-\d{2})$/m);
 if (!verifyBy) {
   errors.push('.pi/memory/STATUS.md: missing exact Updated/Verify-by metadata');
-} else if (today > new Date(`${verifyBy[1]}T00:00:00`)) {
+} else if (isMemoryDateExpired(verifyBy[1], 0, today)) {
   errors.push(`.pi/memory/STATUS.md: expired Verify-by ${verifyBy[1]}`);
 }
 const nextActions = (status.match(/^- \[ \]/gm) ?? []).length;
@@ -62,15 +67,56 @@ if (nextActions > 6) errors.push(`.pi/memory/STATUS.md: ${nextActions} next acti
 
 const facts = loaded.get(path.join(root, '.pi/memory/FACTS.md')) ?? '';
 const factHeadings = facts.match(/^## /gm)?.length ?? 0;
-const factMeta = [...facts.matchAll(/^## [^\r\n]+\r?\n> Verified: (\d{4}-\d{2}-\d{2}) \| TTL: (\d+)d$/gm)];
+const factMeta = [...facts.matchAll(/^## (F-\d+) \| [^\r\n]+\r?\n> Verified: (\d{4}-\d{2}-\d{2}) \| TTL: (\d+)d\r?\n> Type: (fact|decision|constraint|failure_pattern) \| Priority: (normal|pinned)(?: \| Replaces: (F-\d+))?\r?\n> Source: ([^\r\n]+)$/gm)];
 if (factMeta.length !== factHeadings) {
-  errors.push(`.pi/memory/FACTS.md: every section needs immediate Verified/TTL metadata (${factMeta.length}/${factHeadings})`);
+  errors.push(`.pi/memory/FACTS.md: every fact needs immediate Verified/TTL, Type/Priority, and Source metadata (${factMeta.length}/${factHeadings})`);
 }
+const factSectionHeadings = [...facts.matchAll(/^## (F-\d+) \| [^\r\n]+$/gm)];
+for (const [index, heading] of factSectionHeadings.entries()) {
+  const start = heading.index ?? 0;
+  const end = index + 1 < factSectionHeadings.length ? (factSectionHeadings[index + 1].index ?? facts.length) : facts.length;
+  const sourceCount = (facts.slice(start, end).match(/^> Source: .+$/gm) ?? []).length;
+  if (sourceCount !== 1) errors.push(`.pi/memory/FACTS.md: ${heading[1]} needs exactly one Source (${sourceCount})`);
+}
+const factIds = factMeta.map((match) => match[1]);
+const factIdSet = new Set(factIds);
+if (factIdSet.size !== factIds.length) errors.push('.pi/memory/FACTS.md: duplicate Fact ID');
+const replacedIds = new Set(factMeta.flatMap((match) => match[6] ? [match[6]] : []));
+const replaceCounts = new Map();
+const replaceTargets = new Map();
 for (const match of factMeta) {
-  const verified = new Date(`${match[1]}T00:00:00`);
-  const ageDays = Math.floor((today - verified) / 86400000);
-  const ttl = Number(match[2]);
-  if (ageDays > ttl) errors.push(`.pi/memory/FACTS.md: section verified ${match[1]} exceeded TTL ${ttl}d`);
+  const id = match[1];
+  const verified = match[2];
+  const ttl = Number(match[3]);
+  const replaces = match[6];
+  const ageDays = calendarAgeDays(verified, today);
+  if (!Number.isFinite(ageDays) || ageDays < 0) {
+    errors.push(`.pi/memory/FACTS.md: ${id} has invalid or future Verified date ${verified}`);
+  }
+  if (replaces) {
+    if (!factIdSet.has(replaces)) errors.push(`.pi/memory/FACTS.md: ${id} replaces missing ${replaces}`);
+    if (replaces === id) errors.push(`.pi/memory/FACTS.md: ${id} cannot replace itself`);
+    replaceCounts.set(replaces, (replaceCounts.get(replaces) ?? 0) + 1);
+    replaceTargets.set(id, replaces);
+  }
+  if (Number.isFinite(ageDays) && ageDays >= 0 && !replacedIds.has(id) && isMemoryDateExpired(verified, ttl, today)) {
+    errors.push(`.pi/memory/FACTS.md: active ${id} verified ${verified} exceeded TTL ${ttl}d`);
+  }
+}
+for (const [id, count] of replaceCounts) {
+  if (count > 1) errors.push(`.pi/memory/FACTS.md: ${id} is replaced by ${count} facts`);
+}
+for (const id of factIds) {
+  const seen = new Set();
+  let cursor = id;
+  while (replaceTargets.has(cursor)) {
+    if (seen.has(cursor)) {
+      errors.push(`.pi/memory/FACTS.md: Replaces cycle involving ${cursor}`);
+      break;
+    }
+    seen.add(cursor);
+    cursor = replaceTargets.get(cursor);
+  }
 }
 
 const findings = loaded.get(path.join(root, 'findings.md')) ?? '';
@@ -81,36 +127,47 @@ const progress = loaded.get(path.join(root, 'progress.md')) ?? '';
 const milestones = progress.match(/^- \[\d{4}-\d{2}-\d{2}\]/gm)?.length ?? 0;
 if (milestones > 8) errors.push(`progress.md: ${milestones} milestones > 8`);
 
-const secretPatterns = [
-  ['private key', /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/i],
-  ['API token', /\b(?:sk|ghp|github_pat)-[A-Za-z0-9._-]{16,}\b/i],
-  ['VLESS URL', /\bvless:\/\//i],
-  ['credential UUID', /(?:\buuid\b|\bvless\b)[^\r\n]{0,40}\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i],
-  ['pairing code', /(?:pairing(?:[- ]?code)?|配对码)[^\r\n]{0,40}\b\d{6}\b/i],
-  ['root/password literal', /\broot\/password\b/i],
-  ['credential assignment', /(?:password|passwd|api[_ -]?key|secret|token|密码)\s*[:=]\s*["']?(?!\[?(?:redacted|removed)|见\b|see\b|待轮换\b|路径\b|location\b|file\b)[^\s,;|`"']{4,}/i],
-  ['URL credentials', /https?:\/\/[^\s/@:]+:[^\s/@]+@/i],
-];
+const inboxFile = path.join(root, '.pi/memory/INBOX.jsonl');
+const inbox = fs.existsSync(inboxFile) ? fs.readFileSync(inboxFile, 'utf8') : '';
+const inboxLines = inbox.split(/\r?\n/).filter(Boolean);
+if (inboxLines.length > 100) errors.push(`.pi/memory/INBOX.jsonl: ${inboxLines.length} observations > 100`);
+for (const [index, line] of inboxLines.entries()) {
+  try {
+    const item = JSON.parse(line);
+    if (!/^\d{4}-\d{2}-\d{2} /.test(item.ts ?? '') || !['tool_failure', 'config_change'].includes(item.category) || typeof item.summary !== 'string') {
+      errors.push(`.pi/memory/INBOX.jsonl: invalid observation at line ${index + 1}`);
+    }
+  } catch {
+    errors.push(`.pi/memory/INBOX.jsonl: invalid JSON at line ${index + 1}`);
+  }
+}
 
-function listMarkdown(dir) {
+function listTextFiles(dir, pattern) {
   if (!fs.existsSync(dir)) return [];
   const out = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const abs = path.join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...listMarkdown(abs));
-    else if (entry.isFile() && /\.(?:md|json)$/i.test(entry.name)) out.push(abs);
+    if (entry.isDirectory()) out.push(...listTextFiles(abs, pattern));
+    else if (entry.isFile() && pattern.test(entry.name)) out.push(abs);
   }
   return out;
 }
 
 const scanFiles = new Map(loaded);
-for (const file of listMarkdown(path.join(root, 'archive'))) {
+if (inbox) scanFiles.set(inboxFile, inbox);
+const activeMemoryFiles = listTextFiles(path.join(root, '.pi', 'memory'), /\.(?:md|json|jsonl|log|txt|ya?ml|toml)$/i);
+const activeMemorySet = new Set(activeMemoryFiles.map((file) => path.resolve(file)));
+for (const file of activeMemoryFiles) {
+  scanFiles.set(file, fs.readFileSync(file, 'utf8'));
+}
+for (const file of listTextFiles(path.join(root, 'archive'), /\.(?:md|json|jsonl|log|txt|ya?ml|toml)$/i)) {
   scanFiles.set(file, fs.readFileSync(file, 'utf8'));
 }
 for (const [file, text] of scanFiles) {
-  for (const [name, pattern] of secretPatterns) {
-    if (pattern.test(text)) errors.push(`${path.relative(root, file)}: forbidden ${name} pattern`);
-  }
+  const risk = findMemorySecretRisk(text);
+  if (risk) errors.push(`${path.relative(root, file)}: forbidden ${risk} pattern`);
+  const controlRisk = activeMemorySet.has(path.resolve(file)) ? findMemoryControlRisk(text) : null;
+  if (controlRisk) errors.push(`${path.relative(root, file)}: forbidden ${controlRisk} pattern`);
 }
 
 function walk(dir) {

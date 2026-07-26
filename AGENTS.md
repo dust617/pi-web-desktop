@@ -15,8 +15,11 @@
 
 ## Project continuity
 - Pi automatically loads this file, but not other memory files.
-- For work that depends on prior project state, first run `npm run memory:check`, then read `.pi/memory/STATUS.md` and `.pi/memory/FACTS.md`.
-- `task_plan.md`, `findings.md`, and `progress.md` describe only the current complex task. On completion run `npm run memory:archive -- <slug>`.
+- 项目级 memory-guard 会在新会话首个实质请求自动注入简短的 STATUS/FACTS 背景；纯问候跳过。已有 Brief 时不要在 session start 重复无标签 recall。
+- Brief 缺失或需要领域细节时，用 `memory-recall` 精确召回，例如 `tags: ['network']` 或 `tags: ['model', 'pwa']`。
+- 仅将已验证、可复用的事实/决策/约束/失败模式用 `memory-save` 保存；绝不传入凭据、Token、Cookie、私钥或认证 URL。
+- 自动观察只进入候选 INBOX，不会自动成为事实；需要时用 `memory-review` 查看，再确认是否保存。
+- `task_plan.md`, `findings.md`, `progress.md` 只描述当前复杂任务；完成后运行 `npm run memory:archive -- <slug>`。
 - Runtime/config verification overrides stale memory. Resolve contradictions in place; do not preserve two live truths.
 - After editing AGENTS use `/reload` or a new session. After compaction, re-read STATUS only when exact current state matters.
 
