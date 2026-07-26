@@ -35,3 +35,25 @@ test("keeps local file markdown links in the app", () => {
   assert.match(html, /<a href="components\/MarkdownBody\.tsx">file<\/a>/);
   assert.doesNotMatch(html, /target=|rel=|\snode=/);
 });
+
+test("previews local markdown images through the guarded files API", () => {
+  const html = renderMarkdown("![screenshot](images/example.png)");
+
+  assert.match(html, /<img (?=[^>]*src="\/api\/files\/home\/me\/project\/images\/example\.png\?type=read")(?=[^>]*alt="screenshot")[^>]*\/>/);
+  assert.doesNotMatch(html, /\snode=/);
+});
+
+test("keeps external markdown images external without React metadata", () => {
+  const html = renderMarkdown("![remote](https://example.com/image.png)");
+
+  assert.match(html, /<img (?=[^>]*src="https:\/\/example\.com\/image\.png")(?=[^>]*alt="remote")[^>]*\/>/);
+  assert.doesNotMatch(html, /\snode=/);
+});
+
+test("does not misroute UNC markdown images through the files API", () => {
+  const html = renderMarkdown("![network](%5C%5Cserver%5Cshare%5Cimage.png)");
+
+  assert.match(html, /UNC 图片暂不支持内联预览/);
+  assert.doesNotMatch(html, /\/api\/files\/server\/share/);
+  assert.doesNotMatch(html, /\snode=/);
+});

@@ -8,6 +8,7 @@ import { vscDarkPlus } from "react-syntax-highlighter/dist/cjs/styles/prism";
 import { useTheme } from "@/hooks/useTheme";
 import { copyText } from "@/lib/clipboard";
 import { resolveLocalFileHref } from "@/lib/file-links";
+import { encodeFilePathForApi } from "@/lib/file-paths";
 import { markdownRehypePlugins, markdownRemarkPlugins } from "@/lib/markdown";
 
 interface MarkdownBodyProps {
@@ -75,6 +76,36 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
               <a href={href} {...props} onClick={handleClick}>
                 {children}
               </a>
+            );
+          },
+          img({ src, alt, ...props }) {
+            // `node` is react-markdown metadata, not a DOM attribute.
+            delete props.node;
+            // Resolve supported local file paths to /api/files/ URLs for inline
+            // preview. The files route cannot reconstruct a UNC root from URL
+            // segments, so show an explicit non-preview placeholder instead of
+            // silently requesting the wrong /server/share path.
+            const localPath = typeof src === "string" ? resolveLocalFileHref(src, cwd) : null;
+            const isUncPath = localPath?.startsWith("//") === true;
+            if (localPath && !isUncPath) {
+              const apiUrl = `/api/files/${encodeFilePathForApi(localPath)}?type=read`;
+              return (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={apiUrl}
+                  alt={alt || ""}
+                  style={{ maxWidth: "100%", maxHeight: 400, objectFit: "contain", borderRadius: 4, cursor: "pointer" }}
+                  onClick={() => onOpenFile?.(localPath)}
+                  {...props}
+                />
+              );
+            }
+            if (localPath && isUncPath) {
+              return <span title="UNC 图片暂不支持内联预览">🖼 {alt || localPath}</span>;
+            }
+            return (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={src} alt={alt || ""} {...props} />
             );
           },
           table({ children }) {
