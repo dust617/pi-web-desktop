@@ -359,6 +359,13 @@ class AuthManager {
   /** Check rate limit (5 failed attempts per minute per client IP). */
   checkRateLimit(ip: string): boolean {
     const now = Date.now();
+    // Lazy cleanup: purge expired entries so the map cannot grow unbounded
+    // when many distinct IPs probe the login endpoint over time.
+    if (this.loginAttempts.size > 64) {
+      for (const [key, entry] of this.loginAttempts) {
+        if (now > entry.resetAt) this.loginAttempts.delete(key);
+      }
+    }
     const entry = this.loginAttempts.get(ip);
     if (!entry || now > entry.resetAt) {
       this.loginAttempts.set(ip, { count: 1, resetAt: now + 60_000 });

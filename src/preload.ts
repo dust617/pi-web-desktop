@@ -101,11 +101,29 @@ function ensureEditableFocusForPaste(): void {
 }
 
 function init(): void {
+  // Suppress Chromium's native drag-over overlay (the translucent blue /
+  // "copy" badge that covers the whole window when dragging a file). Without
+  // preventDefault on dragover the browser paints its built-in drop-target
+  // visual on top of the pi-web UI; the pi-web frontend has its own drop-zone
+  // highlight so the native one is redundant and visually broken (transparent
+  // image ghost). We only suppress it when files are being dragged so normal
+  // in-page drag (e.g. text selection) is untouched.
+  const suppressNativeDragOverlay = (e: DragEvent) => {
+    if (e.dataTransfer?.types.includes("Files")) {
+      e.preventDefault();
+    }
+  };
+  document.addEventListener("dragover", suppressNativeDragOverlay, { capture: true });
+  document.addEventListener("dragenter", suppressNativeDragOverlay, { capture: true });
+
   document.addEventListener(
     "drop",
     (e) => {
       const files = Array.from(e.dataTransfer?.files ?? []);
       if (files.length > 0) {
+        // Prevent the browser's default file-drop action (navigate to image /
+        // open file) which would replace the pi-web UI entirely.
+        e.preventDefault();
         // stopImmediatePropagation prevents the useDragDrop patch from also
         // inserting paths, avoiding duplicates
         e.stopImmediatePropagation();

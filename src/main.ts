@@ -24,6 +24,16 @@ const runtime = new PiWebRuntime();
 // the old version — the next restart will retry.
 const REQUIRED_STAGED_PI_WEB_ROUTE = "/api/archived-sessions";
 
+function compareVersions(a: string, b: string): number {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
 function isVerifiedStagedPiWeb(stageDir: string, packageVersion: string): boolean {
   try {
     const manifestPath = path.join(stageDir, ".stage-manifest.json");
@@ -84,7 +94,7 @@ function tryApplyStagedPiWebUpgrade(): void {
             const candidate = path.join(backupDir, name);
             if (!isVerifiedStagedPiWeb(candidate, ver)) continue;
             // Compare versions and pick the highest verified stage.
-            if (ver > stagedVersion) {
+            if (compareVersions(ver, stagedVersion) > 0) {
               stagedVersion = ver;
               stagedDir = candidate;
             }

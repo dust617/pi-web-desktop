@@ -2,7 +2,7 @@
  * TunnelSupervisor - 隧道监督状态机
  * 
  * 管理隧道生命周期：
- * - 状态机：disabled -> starting -> connected -> degraded -> blocked
+ * - 状态机：disabled -> unconfigured -> starting -> connecting -> connected -> blocked
  * - 依赖 Bridge readiness
  * - 幂等 graceful shutdown
  * - 托盘状态与重试动作
@@ -18,8 +18,6 @@ export type TunnelState =
   | "starting"           // 正在启动
   | "connecting"         // 正在连接
   | "connected"          // 已连接
-  | "reconnecting"       // 正在重连
-  | "degraded"           // 降级（部分功能不可用）
   | "unknown";           // 状态未知
 
 export interface TunnelProfile {
