@@ -1,6 +1,6 @@
 # pi-web 升级检查清单 & 教训记录
 
-> 每次升级 `resources/pi-web/` 锁定版本前，逐项检查。
+> 每次升级 `resources/pi-web/` 锁定版本前，逐项检查。下游功能差异、外挂优先边界和未恢复能力见 [`docs/pi-web-downstream-delta.md`](docs/pi-web-downstream-delta.md)；它是升级 Gate，不是可选文档。
 
 ## 升级前必做
 
@@ -27,20 +27,16 @@
 ### 5. 依赖变化
 - [ ] `package.json` dependencies 有无新增/删除/大版本跳跃
 - [ ] Pi SDK 版本（`@earendil-works/pi-*`）是否跳跃（0.80→0.81 等）
-- [ ] `node_modules` 能否从旧版 copy + `npm install --prefer-offline` 快速补齐
+- [ ] 必须使用新版本 lockfile 执行干净 `npm ci`；不得复制旧 `node_modules` 或借用旧/上游 `.next` 作为可发布构建
 
 ## 升级执行流程
 
 ```
-1. cp -r resources/pi-web .backup/pi-web-<OLD_VER>     # 备份
-2. npm pack @agegr/pi-web@<NEW_VER>                     # 下载
-3. tar -xzf → .backup/pi-web-<NEW_VER>-staged/          # 解压到暂存
-4. cp -r .backup/pi-web-<OLD_VER>/node_modules → staged # 复用旧依赖
-5. cd staged && npm install --prefer-offline             # 补齐差异
-6. node bin/pi-web.js --port 39999 --no-open             # smoke test
-7. curl http://127.0.0.1:39999/                          # HTTP 200?
-8. 确认无运行实例锁 → swap staged → resources/pi-web
-   若有锁 → 保持 staged，靠 main.ts 自动升级逻辑下次重启切换
+1. 备份当前版本，并导出/确认需要回归的会话。
+2. 运行 `npm run pi-web:stage -- <NEW_VER>`：它会校验 provenance、建立隔离 stage、干净 `npm ci`、应用最小 patch、source build、route/build/test Gate。
+3. 对比旧定制、当前和官方上游，更新 `docs/pi-web-downstream-delta.md`；先恢复或明确登记每个缺失能力。
+4. 运行 staged MobileBridge API/SSE 合同与 desktop smoke；不得只检查 HTTP 200。
+5. 只有 manifest/source-build/route/test/smoke 全通过才允许 swap；失败保留 stage 和 backup，不碰 active runtime。
 ```
 
 ## 已踩过的坑

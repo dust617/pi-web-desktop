@@ -39,6 +39,16 @@ setTimeout(() => {
       console.log("[mock-frpc] Proxy is ready");
       break;
 
+    case "fragmented_success":
+      // Split the readiness markers over separate stdout chunks, mirroring
+      // real process pipes where a write boundary is not a line boundary.
+      process.stdout.write("[mock-frpc] login to ");
+      setTimeout(() => {
+        process.stdout.write("server success\n[mock-frpc] start proxy ");
+        setTimeout(() => process.stdout.write("success\n"), 10);
+      }, 10);
+      break;
+
     case "auth_failed":
       console.log("[mock-frpc] Loading configuration...");
       console.log("[mock-frpc] login to server failed: authorization failed");

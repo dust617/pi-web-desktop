@@ -367,7 +367,7 @@ body { display:flex; flex-direction:column; overflow:hidden; height:100vh; heigh
 
 <script>
 // ─── State ───────────────────────────────────────────────────────────
-const PWA_VERSION = "pi-mobile-v43"; // keep in sync with sw.js VERSION
+const PWA_VERSION = "pi-mobile-v44"; // keep in sync with sw.js VERSION
 const API = "/mobile/api/v1";
 const NAV_STATE_KEY = "pi-mobile-nav";
 let currentView = "login"; // login | projects | sessions | chat
@@ -1534,8 +1534,28 @@ function handleSSEEvent(event) {
       removeStreamingMessage();
       // Alert the user that the reply finished (vibrate + chime).
       notifyDone();
-      // Refresh history to get final messages
-      refreshHistory();
+      // A desktop-originated prompt reaches mobile through history rather than
+      // an optimistic local bubble. Reconcile it once, then retry once only if
+      // the reconciliation was not applied (network error or revision guard).
+      // Capture both identity guards so an old timer can never update a newly
+      // opened session.
+      const anchorSessionId = currentSessionId;
+      const anchorLoadId = viewLoadId;
+      refreshHistory().then((applied) => {
+        if (currentView !== "chat" || currentSessionId !== anchorSessionId || viewLoadId !== anchorLoadId) return;
+        refreshLastUserQuestion();
+        updateContextAnchor();
+        if (!applied) {
+          setTimeout(() => {
+            if (currentView !== "chat" || currentSessionId !== anchorSessionId || viewLoadId !== anchorLoadId) return;
+            refreshHistory().then((retryApplied) => {
+              if (!retryApplied || currentView !== "chat" || currentSessionId !== anchorSessionId || viewLoadId !== anchorLoadId) return;
+              refreshLastUserQuestion();
+              updateContextAnchor();
+            });
+          }, 500);
+        }
+      });
       // Refresh state for context usage
       refreshState();
       break;
@@ -1572,13 +1592,13 @@ function handleSSEEvent(event) {
 }
 
 async function refreshHistory() {
-  if (!currentSessionId) return;
+  if (!currentSessionId) return false;
   const sessionId = currentSessionId;
   const loadId = viewLoadId;
   const revision = messageRevision;
   try {
     const hist = await api(`/sessions/${encodeURIComponent(sessionId)}/history`);
-    if (loadId !== viewLoadId || currentView !== "chat" || currentSessionId !== sessionId || revision !== messageRevision) return;
+    if (loadId !== viewLoadId || currentView !== "chat" || currentSessionId !== sessionId || revision !== messageRevision) return false;
     const nextMessages = (hist.messages ?? []).filter(isVisibleMobileMessage);
     const hasNewContent = historyTailKey(nextMessages) !== historyTailKey(currentMessages);
     currentMessages = nextMessages;
@@ -1590,7 +1610,10 @@ async function refreshHistory() {
       if (streamRenderFrame == null) streamRenderFrame = requestAnimationFrame(renderStreamingMessage);
     }
     scrollToBottom(false, hasNewContent);
-  } catch { /* ignore */ }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function scheduleContextWarmup(delay = 250) {
@@ -2493,7 +2516,7 @@ function setupPullToRefresh() {
 // ─── Init ────────────────────────────────────────────────────────────
 (async function init() {
   // Register service worker with automatic, no-cache-clear updates.
-  // PWA_VERSION must match VERSION in sw.js; bump BOTH on every deploy.
+  // PWA_VERSION must match VERSION in sw.js; bump BOTH on every deploy. (v44: fix ctx-anchor not updating for desktop-sent messages)
   // Updates are applied SILENTLY in the background: the new SW takes over via
   // skipWaiting+claim and the network-first shell serves the fresh version on
   // the next cold launch. We never reload the live page here — doing so mid-

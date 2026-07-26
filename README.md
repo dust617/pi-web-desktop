@@ -45,7 +45,7 @@
 ### 环境要求
 
 - Windows 10/11
-- Node.js ≥ 18
+- Node.js ≥ 22.19.0
 - Git
 
 ### 安装
@@ -185,7 +185,7 @@ npm run build           # TypeScript 编译
 
 - **Electron** 40 – 桌面壳
 - **TypeScript** 5.9 – 主进程代码
-- **pi-web** 0.8.0 – AI 编码助手 Web UI（锁定版本内置）
+- **pi-web** 0.8.1 – AI 编码助手 Web UI（锁定版本内置）
 - **Next.js** 16 – pi-web 前端框架
 - **Cloudflare Tunnel** – 可选公网 HTTPS 接入
 - **PWA** – Service Worker + Manifest，移动端接近原生体验
@@ -196,8 +196,10 @@ npm run build           # TypeScript 编译
 
 本项目是 [agegr/pi-web](https://github.com/agegr/pi-web) 的第三方桌面封装，**所有 AI 编码能力来自 pi-web 上游**。我们：
 
-- 锁定了经过验证的 pi-web 构建版本，仅做最小的 `?cwd=` 初始目录补丁；
-- 在其上增加了桌面壳（右键菜单、托盘、单实例、崩溃恢复）与移动端互通桥。
+- 锁定经过验证的 pi-web 构建版本；下游差异采用“外挂优先”的最小 adapter，而非覆盖上游核心；
+- 在其上增加桌面壳（右键菜单、托盘、单实例、崩溃恢复）与移动端互通桥。
+
+下游能力清单、升级 Gate 与迁移原则见 [`docs/pi-web-downstream-delta.md`](docs/pi-web-downstream-delta.md)。
 
 > 如果你也在做 pi-web 的桌面/移动集成，欢迎参考本项目的 `src/mobile-bridge.ts`（版本化 BFF + 配对码认证 + SSE 适配）与 `mobile/` 子项目实践。
 

@@ -189,6 +189,12 @@
       "namedRegex": "^/api/auth/providers(?:/)?$"
     },
     {
+      "page": "/api/cwd/browse",
+      "regex": "^/api/cwd/browse(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/cwd/browse(?:/)?$"
+    },
+    {
       "page": "/api/cwd/validate",
       "regex": "^/api/cwd/validate(?:/)?$",
       "routeKeys": {},

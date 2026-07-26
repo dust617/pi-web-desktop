@@ -3,6 +3,8 @@
 import { useEffect, useLayoutEffect, useState, useCallback, useRef, type CSSProperties, type ReactNode } from "react";
 import type { SessionInfo } from "@/lib/types";
 import { copyText } from "@/lib/clipboard";
+import { formatSessionCopyDetails } from "@/lib/session-copy";
+import { DirectoryPicker } from "./DirectoryPicker";
 import { FileExplorer, type FileExplorerHandle } from "./FileExplorer";
 
 declare global {
@@ -334,7 +336,6 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const [customPathValue, setCustomPathValue] = useState("");
   const [customPathError, setCustomPathError] = useState<string | null>(null);
   const [customPathValidating, setCustomPathValidating] = useState(false);
-  const customPathInputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   // Worktree switcher state
   const [worktreeState, setWorktreeState] = useState<WorktreeState | null>(null);
@@ -362,87 +363,85 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const explorerRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileExplorerRef = useRef<FileExplorerHandle>(null);
 
-  // ── Context menu (right-click → Copy Session ID / Archive) ───────
-  const [contextMenu, setContextMenu] = useState<{ sessionId: string; x: number; y: number } | null>(null);
+  // Downstream extension boundary: the archive data/API and this menu are kept
+  // separate from upstream tree rendering, so a pi-web upgrade only needs this
+  // small adapter rather than a fork of session handling.
+  const [contextMenu, setContextMenu] = useState<{ session: SessionInfo; x: number; y: number } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-
-  // Close context menu on outside click; if inside, the button's onClick handles it
-  useEffect(() => {
-    if (!contextMenu) return;
-    const handler = (e: MouseEvent) => {
-      if (menuRef.current?.contains(e.target as Node)) return;
-      setContextMenu(null);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [contextMenu]);
-
   const [copiedToast, setCopiedToast] = useState(false);
-
-  const handleCopySessionId = useCallback((id: string) => {
-    void copyText(id);
-    setContextMenu(null);
-    setCopiedToast(true);
-    setTimeout(() => setCopiedToast(false), 1800);
-  }, []);
-
-  // ── Archive ──────────────────────────────────────────────────────
   const [archivedIds, setArchivedIds] = useState<Set<string>>(new Set());
   const [showArchived, setShowArchived] = useState(false);
 
-  // Load archived IDs from disk (survives port changes in Electron)
   useEffect(() => {
     fetch("/api/archived-sessions")
-      .then((r) => r.ok ? r.json() : null)
-      .then((data) => { if (data?.ids) setArchivedIds(new Set(data.ids)); })
+      .then((response) => response.ok ? response.json() : null)
+      .then((data) => { if (Array.isArray(data?.ids)) setArchivedIds(new Set(data.ids)); })
       .catch(() => {});
   }, []);
 
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = (event: MouseEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) setContextMenu(null);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setContextMenu(null);
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [contextMenu]);
+
   const persistArchived = useCallback((ids: Set<string>) => {
     setArchivedIds(ids);
-    fetch("/api/archived-sessions", {
+    void fetch("/api/archived-sessions", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ids: [...ids] }),
     }).catch(() => {});
   }, []);
 
-  // Collect a session and all its descendants (child/forked sessions)
   const collectDescendantIds = useCallback((rootId: string): string[] => {
-    const childMap = new Map<string, string[]>();
-    for (const s of allSessions) {
-      if (s.parentSessionId) {
-        const list = childMap.get(s.parentSessionId) ?? [];
-        list.push(s.id);
-        childMap.set(s.parentSessionId, list);
-      }
+    const children = new Map<string, string[]>();
+    for (const session of allSessions) {
+      if (!session.parentSessionId) continue;
+      const ids = children.get(session.parentSessionId) ?? [];
+      ids.push(session.id);
+      children.set(session.parentSessionId, ids);
     }
-    const result: string[] = [];
-    const stack = [rootId];
-    while (stack.length) {
-      const cur = stack.pop()!;
-      result.push(cur);
-      const kids = childMap.get(cur);
-      if (kids) stack.push(...kids);
+    const ids: string[] = [];
+    const pending = [rootId];
+    while (pending.length) {
+      const id = pending.pop()!;
+      ids.push(id);
+      pending.push(...(children.get(id) ?? []));
     }
-    return result;
+    return ids;
   }, [allSessions]);
 
-  const handleArchive = useCallback((id: string) => {
+  const handleArchive = useCallback((sessionId: string) => {
     const next = new Set(archivedIds);
-    for (const did of collectDescendantIds(id)) next.add(did);
+    for (const id of collectDescendantIds(sessionId)) next.add(id);
     persistArchived(next);
     setContextMenu(null);
-  }, [archivedIds, persistArchived, collectDescendantIds]);
+  }, [archivedIds, collectDescendantIds, persistArchived]);
 
-  const handleUnarchive = useCallback((id: string) => {
+  const handleUnarchive = useCallback((sessionId: string) => {
     const next = new Set(archivedIds);
-    next.delete(id);
+    next.delete(sessionId);
     persistArchived(next);
     setContextMenu(null);
   }, [archivedIds, persistArchived]);
 
-  const archivedCount = archivedIds.size;
+  const handleCopySessionDetails = useCallback((session: SessionInfo) => {
+    void copyText(formatSessionCopyDetails(session));
+    setContextMenu(null);
+    setCopiedToast(true);
+    setTimeout(() => setCopiedToast(false), 1800);
+  }, []);
 
   const loadSessions = useCallback(async (showLoading = false) => {
     try {
@@ -523,9 +522,12 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         return next;
       });
     }
+    if (completedInBackground.length > 0) {
+      loadSessions(false);
+    }
 
     previousRunningSessionIdsRef.current = runningSessionIds;
-  }, [runningSessionIds, selectedSessionId]);
+  }, [runningSessionIds, selectedSessionId, loadSessions]);
 
   useEffect(() => {
     if (!selectedSessionId) return;
@@ -667,30 +669,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     }
   }, [customPathValue, customPathValidating]);
 
-  const handleCustomPathClick = useCallback(async () => {
-    const desktop = window.piDesktop;
-    if (!desktop) {
-      setCustomPathOpen(true);
-      setCustomPathError(null);
-      setTimeout(() => customPathInputRef.current?.focus(), 0);
-      return;
-    }
-
-    try {
-      setCustomPathError(null);
-      const path = await desktop.selectDirectory();
-      if (path === null) return;
-
-      setCustomPathValue(path);
-      setCustomPathOpen(true);
-      await commitCustomPath(path);
-    } catch (e) {
-      setCustomPathOpen(true);
-      setCustomPathError(e instanceof Error ? e.message : String(e));
-      setTimeout(() => customPathInputRef.current?.focus(), 0);
-    }
-  }, [commitCustomPath]);
-
+  const handleCustomPathClick = useCallback(() => {
+    setCustomPathOpen(true);
+    setCustomPathError(null);
+    setDropdownOpen(false);
+  }, []);
   const handleDefaultCwd = useCallback(async () => {
     try {
       const res = await fetch("/api/default-cwd", { method: "POST" });
@@ -779,9 +762,6 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
         setDropdownOpen(false);
         setProjectFilter("");
-        setCustomPathOpen(false);
-        setCustomPathValue("");
-        setCustomPathError(null);
       }
       if (wtDropdownRef.current && !wtDropdownRef.current.contains(e.target as Node)) {
         setWtDropdownOpen(false);
@@ -825,7 +805,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const filteredSessions = (selectedProject
     ? allSessions.filter((s) => (s.projectRoot ?? s.cwd) === selectedProject)
     : allSessions
-  ).filter((s) => showArchived || !archivedIds.has(s.id));
+  ).filter((session) => showArchived || !archivedIds.has(session.id));
   const showWorktreeSwitcher = Boolean(
     worktreeState?.isGit
     && worktreeState.isTopLevel
@@ -861,6 +841,17 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
       <style>{`@keyframes sidebarToastFade { 0%{opacity:0} 12%{opacity:1} 78%{opacity:1} 100%{opacity:0} }`}</style>
+      {customPathOpen && (
+        <DirectoryPicker
+          busy={customPathValidating}
+          error={customPathError}
+          onCancel={() => {
+            setCustomPathOpen(false);
+            setCustomPathError(null);
+          }}
+          onSelect={(path) => void commitCustomPath(path)}
+        />
+      )}
       {/* Header */}
       <div
         style={{
@@ -1114,115 +1105,32 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                 </button>
               )}
 
-              {/* Custom path entry */}
-              {!customPathOpen ? (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void handleCustomPathClick();
-                  }}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 7,
-                    width: "100%",
-                    padding: "8px 10px",
-                    background: "none",
-                    border: "none",
-                    color: "var(--text-muted)",
-                    cursor: "pointer",
-                    textAlign: "left",
-                    fontSize: 11,
-                  }}
-                >
-                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" style={{ flexShrink: 0 }}>
-                    <line x1="5" y1="1" x2="5" y2="9" />
-                    <line x1="1" y1="5" x2="9" y2="5" />
-                  </svg>
-                  <span>Custom path…</span>
-                </button>
-              ) : (
-                <div style={{ padding: "6px 8px", borderTop: visibleProjects.length > 0 ? "none" : undefined }}>
-                  <input
-                    ref={customPathInputRef}
-                    value={customPathValue}
-                    onChange={(e) => {
-                      setCustomPathValue(e.target.value);
-                      setCustomPathError(null);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        void commitCustomPath();
-                      }
-                      if (e.key === "Escape") {
-                        setCustomPathOpen(false);
-                        setCustomPathValue("");
-                        setCustomPathError(null);
-                      }
-                    }}
-                    placeholder="/path/to/project"
-                    style={{
-                      width: "100%",
-                      fontSize: 11,
-                      fontFamily: "var(--font-mono)",
-                      padding: "5px 8px",
-                      border: "1px solid var(--accent)",
-                      borderRadius: 5,
-                      outline: "none",
-                      background: "var(--bg)",
-                      color: "var(--text)",
-                      boxSizing: "border-box",
-                    }}
-                  />
-                  {customPathError && (
-                    <div style={{
-                      marginTop: 5,
-                      color: "#dc2626",
-                      fontSize: 11,
-                      lineHeight: 1.35,
-                      overflowWrap: "anywhere",
-                    }}>
-                      {customPathError}
-                    </div>
-                  )}
-                  <div style={{ display: "flex", gap: 5, marginTop: 5 }}>
-                    <button
-                      onClick={() => void commitCustomPath()}
-                      disabled={customPathValidating || !customPathValue.trim()}
-                      style={{
-                        flex: 1,
-                        padding: "4px 0",
-                        background: "var(--accent)",
-                        border: "none",
-                        borderRadius: 5,
-                        color: "#fff",
-                        fontSize: 11,
-                        fontWeight: 600,
-                        cursor: customPathValidating || !customPathValue.trim() ? "not-allowed" : "pointer",
-                        opacity: customPathValidating || !customPathValue.trim() ? 0.65 : 1,
-                      }}
-                    >
-                      {customPathValidating ? "Checking…" : "Open"}
-                    </button>
-                    <button
-                      onClick={() => { setCustomPathOpen(false); setCustomPathValue(""); setCustomPathError(null); }}
-                      style={{
-                        flex: 1,
-                        padding: "4px 0",
-                        background: "var(--bg-hover)",
-                        border: "1px solid var(--border)",
-                        borderRadius: 5,
-                        color: "var(--text-muted)",
-                        fontSize: 11,
-                        cursor: "pointer",
-                      }}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              )}
+              {/* Custom path directory picker */}
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleCustomPathClick();
+                }}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 7,
+                  width: "100%",
+                  padding: "8px 10px",
+                  background: "none",
+                  border: "none",
+                  color: "var(--text-muted)",
+                  cursor: "pointer",
+                  textAlign: "left",
+                  fontSize: 11,
+                }}
+              >
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" style={{ flexShrink: 0 }}>
+                  <line x1="5" y1="1" x2="5" y2="9" />
+                  <line x1="1" y1="5" x2="9" y2="5" />
+                </svg>
+                <span>Custom path…</span>
+              </button>
           </AnimatedDropdown>
         </div>
 
@@ -1545,35 +1453,12 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       </div>
 
       {/* Archive toggle */}
-      {archivedCount > 0 && (
+      {archivedIds.size > 0 && (
         <button
-          onClick={() => setShowArchived((v) => !v)}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            padding: "5px 14px",
-            background: "none",
-            border: "none",
-            borderBottom: "1px solid var(--border)",
-            color: showArchived ? "var(--accent)" : "var(--text-muted)",
-            fontSize: 11,
-            cursor: "pointer",
-            width: "100%",
-            textAlign: "left",
-          }}
-          onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.background = "none"; }}
+          onClick={() => setShowArchived((value) => !value)}
+          style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 14px", background: "none", border: "none", borderBottom: "1px solid var(--border)", color: showArchived ? "var(--accent)" : "var(--text-muted)", fontSize: 11, cursor: "pointer", width: "100%", textAlign: "left" }}
         >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-            <polyline points="21 8 21 21 3 21 3 8" />
-            <rect x="1" y="3" width="22" height="5" />
-            <line x1="10" y1="12" x2="14" y2="12" />
-          </svg>
-          <span>{showArchived ? "隐藏已归档" : "显示已归档"}（{archivedCount}）</span>
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" style={{ marginLeft: "auto", flexShrink: 0, transform: showArchived ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>
-            <polyline points="2,3 5,6 8,3" />
-          </svg>
+          <span>{showArchived ? "隐藏已归档" : "显示已归档"}（{archivedIds.size}）</span>
         </button>
       )}
 
@@ -1609,124 +1494,40 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               onSessionDeleted?.(id);
               loadSessions();
             }}
-            onContextMenu={(e, id) => {
-              e.preventDefault();
-              e.stopPropagation();
-              setContextMenu({ sessionId: id, x: e.clientX, y: e.clientY });
+            onContextMenu={(event, session) => {
+              event.preventDefault();
+              event.stopPropagation();
+              setContextMenu({
+                session,
+                x: Math.max(8, Math.min(event.clientX, window.innerWidth - 220)),
+                y: Math.max(8, Math.min(event.clientY, window.innerHeight - 110)),
+              });
             }}
             depth={0}
           />
         ))}
       </div>
 
-      {/* Right-click context menu */}
       {contextMenu && (
-        <div
-          ref={menuRef}
-          style={{
-            position: "fixed",
-            left: contextMenu.x,
-            top: contextMenu.y,
-            zIndex: 9999,
-            background: "var(--bg)",
-            border: "1px solid var(--border)",
-            borderRadius: 8,
-            boxShadow: "0 4px 16px rgba(0,0,0,0.18)",
-            padding: "4px 0",
-            minWidth: 170,
-          }}
-        >
+        <div ref={menuRef} style={{ position: "fixed", left: contextMenu.x, top: contextMenu.y, zIndex: 9999, minWidth: 205, padding: "4px 0", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.18)" }}>
           <button
-            onClick={(e) => {
-              e.stopPropagation();
-              handleCopySessionId(contextMenu.sessionId);
-            }}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              width: "100%",
-              padding: "8px 12px",
-              background: "none",
-              border: "none",
-              color: "var(--text)",
-              fontSize: 12,
-              cursor: "pointer",
-              textAlign: "left",
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = "var(--bg-hover)";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = "none";
-            }}
+            onClick={() => handleCopySessionDetails(contextMenu.session)}
+            style={{ display: "block", width: "100%", padding: "8px 12px", background: "none", border: "none", color: "var(--text)", fontSize: 12, cursor: "pointer", textAlign: "left" }}
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-            </svg>
-            <span>Copy Session ID</span>
+            复制会话 ID 和文件路径
           </button>
-          {/* Archive / Unarchive */}
-          <div style={{ height: 1, background: "var(--border)", margin: "2px 8px" }} />
+          <div style={{ height: 1, margin: "2px 8px", background: "var(--border)" }} />
           <button
-            onClick={(e) => {
-              e.stopPropagation();
-              archivedIds.has(contextMenu.sessionId)
-                ? handleUnarchive(contextMenu.sessionId)
-                : handleArchive(contextMenu.sessionId);
-            }}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              width: "100%",
-              padding: "8px 12px",
-              background: "none",
-              border: "none",
-              color: "var(--text)",
-              fontSize: 12,
-              cursor: "pointer",
-              textAlign: "left",
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = "var(--bg-hover)";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = "none";
-            }}
+            onClick={() => archivedIds.has(contextMenu.session.id) ? handleUnarchive(contextMenu.session.id) : handleArchive(contextMenu.session.id)}
+            style={{ display: "block", width: "100%", padding: "8px 12px", background: "none", border: "none", color: "var(--text)", fontSize: 12, cursor: "pointer", textAlign: "left" }}
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-              {archivedIds.has(contextMenu.sessionId)
-                ? <><polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" /></>
-                : <><polyline points="21 8 21 21 3 21 3 8" /><rect x="1" y="3" width="22" height="5" /><line x1="10" y1="12" x2="14" y2="12" /></>
-              }
-            </svg>
-            <span>{archivedIds.has(contextMenu.sessionId) ? "取消归档" : "归档"}</span>
+            {archivedIds.has(contextMenu.session.id) ? "取消归档" : "归档会话及其分支"}
           </button>
         </div>
       )}
-
-      {/* Copy success toast */}
       {copiedToast && (
-        <div
-          style={{
-            position: "fixed",
-            left: "50%",
-            top: "50%",
-            transform: "translate(-50%, -50%)",
-            zIndex: 10000,
-            background: "rgba(0,0,0,0.82)",
-            color: "#fff",
-            padding: "10px 20px",
-            borderRadius: 10,
-            fontSize: 13,
-            pointerEvents: "none",
-            animation: "sidebarToastFade 1.8s ease forwards",
-            whiteSpace: "nowrap",
-          }}
-        >
-          ✓ Session ID copied
+        <div style={{ position: "fixed", left: "50%", top: "50%", transform: "translate(-50%, -50%)", zIndex: 10000, padding: "10px 20px", borderRadius: 10, background: "rgba(0,0,0,0.82)", color: "#fff", fontSize: 13, pointerEvents: "none", animation: "sidebarToastFade 1.8s ease forwards", whiteSpace: "nowrap" }}>
+          ✓ 已复制会话 ID 和文件路径
         </div>
       )}
 
@@ -1869,11 +1670,11 @@ function SessionTreeItem({
   selectedSessionId: string | null;
   runningSessionIds: Set<string>;
   unreadSessionIds: Set<string>;
-  archivedIds?: Set<string>;
+  archivedIds: Set<string>;
   onSelectSession: (s: SessionInfo) => void;
   onRenamed?: () => void;
   onSessionDeleted?: (id: string) => void;
-  onContextMenu?: (e: React.MouseEvent, id: string) => void;
+  onContextMenu: (event: React.MouseEvent, session: SessionInfo) => void;
   depth: number;
 }) {
   const [collapsed, setCollapsed] = useState(false);
@@ -1898,7 +1699,7 @@ function SessionTreeItem({
           isSelected={node.session.id === selectedSessionId}
           isRunning={runningSessionIds.has(node.session.id)}
           isUnread={unreadSessionIds.has(node.session.id)}
-          isArchived={!!archivedIds?.has(node.session.id)}
+          isArchived={archivedIds.has(node.session.id)}
           onClick={() => onSelectSession(node.session)}
           onRenamed={onRenamed}
           onDeleted={(id) => onSessionDeleted?.(id)}
@@ -2018,7 +1819,7 @@ function SessionItem({
   onClick: () => void;
   onRenamed?: () => void;
   onDeleted?: (id: string) => void;
-  onContextMenu?: (e: React.MouseEvent, id: string) => void;
+  onContextMenu?: (event: React.MouseEvent, session: SessionInfo) => void;
   depth?: number;
   hasChildren?: boolean;
   collapsed?: boolean;
@@ -2084,12 +1885,9 @@ function SessionItem({
   return (
     <div
       onClick={confirmDelete || renaming ? undefined : onClick}
-      onContextMenu={(e) => {
-        if (onContextMenu) {
-          e.preventDefault();
-          e.stopPropagation();
-          onContextMenu(e, session.id);
-        }
+      onContextMenu={(event) => {
+        if (confirmDelete || renaming) return;
+        onContextMenu?.(event, session);
       }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => { setHovered(false); }}

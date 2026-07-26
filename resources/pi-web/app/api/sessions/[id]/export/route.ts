@@ -234,7 +234,13 @@ async function exportSession(filePath: string, outputPath: string): Promise<void
   if (!packageDir) throw new Error("pi CLI not found");
 
   const exporterUrl = pathToFileURL(join(packageDir, "dist", "core", "export-html", "index.js")).href;
-  const { exportFromFile } = (await import(exporterUrl)) as ExportHtmlModule;
+  // packageDir is discovered at runtime. Keep this fallback out of webpack's
+  // dynamic-import context analysis, which would otherwise glob the Windows
+  // user profile while tracing the server bundle.
+  const importRuntimeModule = new Function("specifier", "return import(specifier)") as (
+    specifier: string,
+  ) => Promise<ExportHtmlModule>;
+  const { exportFromFile } = await importRuntimeModule(exporterUrl);
   await exportFromFile(filePath, outputPath);
 }
 

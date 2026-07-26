@@ -9,7 +9,7 @@
 //     network-first shell while an active chat remains undisturbed.
 //
 // API/auth/SSE are never intercepted. Offline launch still works from cache.
-const VERSION = "pi-mobile-v43";
+const VERSION = "pi-mobile-v44";
 const CACHE_NAME = VERSION;
 const SHELL_URLS = ["/mobile/", "/mobile/index.html", "/mobile/manifest.json"];
 

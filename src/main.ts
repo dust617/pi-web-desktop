@@ -22,6 +22,49 @@ const runtime = new PiWebRuntime();
 // an exclusive lock on the old directory, so we cannot hot-swap). If the swap
 // fails (e.g. another instance still holds the lock), we log and continue with
 // the old version — the next restart will retry.
+const REQUIRED_STAGED_PI_WEB_ROUTE = "/api/archived-sessions";
+
+function isVerifiedStagedPiWeb(stageDir: string, packageVersion: string): boolean {
+  try {
+    const manifestPath = path.join(stageDir, ".stage-manifest.json");
+    if (!fs.existsSync(manifestPath)) throw new Error("missing stage manifest");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as {
+      version?: unknown;
+      buildFromSource?: unknown;
+      buildId?: unknown;
+      requiredCompiledRoutes?: unknown;
+      gitTag?: unknown;
+      gitTagPeeledCommit?: unknown;
+      npmGitHead?: unknown;
+      shasum?: unknown;
+      integrity?: unknown;
+      tests?: { command?: unknown; passed?: unknown };
+    };
+    const provenanceFields = ["gitTag", "gitTagPeeledCommit", "npmGitHead", "shasum", "integrity"] as const;
+    if (manifest.version !== packageVersion) throw new Error("manifest/package version mismatch");
+    if (manifest.buildFromSource !== true) throw new Error("stage was not built from source");
+    if (!provenanceFields.every((field) => typeof manifest[field] === "string" && manifest[field].length > 0)) {
+      throw new Error("missing stage provenance");
+    }
+    if (!Array.isArray(manifest.requiredCompiledRoutes) || !manifest.requiredCompiledRoutes.includes(REQUIRED_STAGED_PI_WEB_ROUTE)) {
+      throw new Error(`missing required route declaration: ${REQUIRED_STAGED_PI_WEB_ROUTE}`);
+    }
+    if (manifest.tests?.command !== "npm test" || manifest.tests.passed !== true) {
+      throw new Error("staged pi-web tests were not recorded as passed");
+    }
+    const buildIdPath = path.join(stageDir, ".next", "BUILD_ID");
+    if (!fs.existsSync(buildIdPath) || fs.readFileSync(buildIdPath, "utf8").trim() !== manifest.buildId) {
+      throw new Error("BUILD_ID does not match manifest");
+    }
+    const archiveRoute = path.join(stageDir, ".next", "server", "app", "api", "archived-sessions", "route.js");
+    if (!fs.existsSync(archiveRoute)) throw new Error("compiled archived-sessions route is missing");
+    return true;
+  } catch (err) {
+    console.warn(`[main] rejecting staged pi-web at ${stageDir}: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
 function tryApplyStagedPiWebUpgrade(): void {
   // Packaged resources live inside app.asar/app.asar.unpacked and must be
   // upgraded by a signed installer, never by mutating the installation tree.
@@ -38,13 +81,15 @@ function tryApplyStagedPiWebUpgrade(): void {
         if (fs.existsSync(pkgPath)) {
           try {
             const ver = JSON.parse(fs.readFileSync(pkgPath, "utf8")).version as string;
-            // Compare versions and pick the highest
+            const candidate = path.join(backupDir, name);
+            if (!isVerifiedStagedPiWeb(candidate, ver)) continue;
+            // Compare versions and pick the highest verified stage.
             if (ver > stagedVersion) {
               stagedVersion = ver;
-              stagedDir = path.join(backupDir, name);
+              stagedDir = candidate;
             }
           } catch {
-            // Skip invalid package.json
+            // Skip an unreadable or invalid staged package.
           }
         }
       }

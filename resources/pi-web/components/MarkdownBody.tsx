@@ -1,15 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
+import { useMemo, type MouseEvent } from "react";
 import ReactMarkdown from "react-markdown";
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { vs } from "react-syntax-highlighter/dist/cjs/styles/prism";
-import { vscDarkPlus } from "react-syntax-highlighter/dist/cjs/styles/prism";
-import { useTheme } from "@/hooks/useTheme";
-import { copyText } from "@/lib/clipboard";
 import { resolveLocalFileHref } from "@/lib/file-links";
 import { encodeFilePathForApi } from "@/lib/file-paths";
-import { markdownRehypePlugins, markdownRemarkPlugins } from "@/lib/markdown";
+import { markdownRehypePlugins, markdownRemarkPlugins, normalizeDisplayMath } from "@/lib/markdown";
+import { MermaidBlock, CodeBlock } from "./MermaidBlock";
 
 interface MarkdownBodyProps {
   children: string;
@@ -79,34 +75,14 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
             );
           },
           img({ src, alt, ...props }) {
-            // `node` is react-markdown metadata, not a DOM attribute.
             delete props.node;
-            // Resolve supported local file paths to /api/files/ URLs for inline
-            // preview. The files route cannot reconstruct a UNC root from URL
-            // segments, so show an explicit non-preview placeholder instead of
-            // silently requesting the wrong /server/share path.
-            const localPath = typeof src === "string" ? resolveLocalFileHref(src, cwd) : null;
-            const isUncPath = localPath?.startsWith("//") === true;
-            if (localPath && !isUncPath) {
-              const apiUrl = `/api/files/${encodeFilePathForApi(localPath)}?type=read`;
-              return (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={apiUrl}
-                  alt={alt || ""}
-                  style={{ maxWidth: "100%", maxHeight: 400, objectFit: "contain", borderRadius: 4, cursor: "pointer" }}
-                  onClick={() => onOpenFile?.(localPath)}
-                  {...props}
-                />
-              );
-            }
-            if (localPath && isUncPath) {
-              return <span title="UNC 图片暂不支持内联预览">🖼 {alt || localPath}</span>;
-            }
-            return (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={src} alt={alt || ""} {...props} />
-            );
+            const filePath = typeof src === "string" ? resolveLocalFileHref(src, cwd) : null;
+            const imageSrc = filePath
+              ? `/api/files/${encodeFilePathForApi(filePath)}?type=read`
+              : src;
+            // Dynamic local paths are served directly by the file API.
+            // eslint-disable-next-line @next/next/no-img-element
+            return <img src={imageSrc} alt={alt ?? ""} loading="lazy" {...props} />;
           },
           table({ children }) {
             return (
@@ -119,165 +95,6 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
       >
         {normalizedMarkdown}
       </ReactMarkdown>
-    </div>
-  );
-}
-
-function normalizeDisplayMath(markdown: string): string {
-  const lineBreak = markdown.includes("\r\n") ? "\r\n" : "\n";
-  const lines = markdown.split(/\r?\n/);
-  let fence: { marker: string; size: number } | null = null;
-
-  return lines
-    .map((line) => {
-      const fenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})/);
-      if (fenceMatch) {
-        const marker = fenceMatch[1][0];
-        const size = fenceMatch[1].length;
-        if (!fence) fence = { marker, size };
-        else if (marker === fence.marker && size >= fence.size) fence = null;
-        return line;
-      }
-
-      if (fence) return line;
-
-      const displayMathMatch = line.match(/^([ \t]{0,3})\$\$(.+)\$\$[ \t]*$/);
-      if (!displayMathMatch) return line;
-
-      const math = displayMathMatch[2].trim();
-      if (!math) return line;
-
-      return `${displayMathMatch[1]}$$${lineBreak}${math}${lineBreak}${displayMathMatch[1]}$$`;
-    })
-    .join(lineBreak);
-}
-
-function MermaidBlock({ code, isStreaming }: { code: string; isStreaming?: boolean }) {
-  const { isDark } = useTheme();
-  const [showPreview, setShowPreview] = useState(false);
-  const [svg, setSvg] = useState<string | null>(null);
-  const [renderedKey, setRenderedKey] = useState("");
-  const [failedKey, setFailedKey] = useState<string | null>(null);
-  const currentKey = `${isDark ? "dark" : "light"}\n${code}`;
-
-  useEffect(() => {
-    if (!showPreview || isStreaming) return;
-
-    let cancelled = false;
-    setFailedKey(null);
-
-    const render = async () => {
-      const { default: mermaid } = await import("mermaid");
-      mermaid.initialize({
-        startOnLoad: false,
-        securityLevel: "strict",
-        suppressErrorRendering: true,
-        theme: isDark ? "dark" : "default",
-      });
-
-      const parsed = await mermaid.parse(code, { suppressErrors: true });
-      if (!parsed) throw new Error("Invalid Mermaid diagram");
-
-      const id =
-        typeof crypto !== "undefined" && "randomUUID" in crypto
-          ? `mermaid-${crypto.randomUUID()}`
-          : `mermaid-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      const result = await mermaid.render(id, code);
-      if (!cancelled) {
-        setSvg(result.svg);
-        setRenderedKey(currentKey);
-      }
-    };
-
-    render().catch(() => {
-      if (!cancelled) setFailedKey(currentKey);
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [code, currentKey, isDark, isStreaming, showPreview]);
-
-  const previewButton = (
-    <button
-      onClick={() => setShowPreview((v) => !v)}
-      disabled={isStreaming}
-      title={isStreaming ? "Preview available after streaming" : (showPreview ? "Show Mermaid source" : "Preview Mermaid diagram")}
-      className={["markdown-code-action", showPreview ? "is-active" : ""].filter(Boolean).join(" ")}
-    >
-      {showPreview ? "Source" : "Preview"}
-    </button>
-  );
-
-  if (!showPreview || isStreaming) {
-    return <CodeBlock code={code} lang="mermaid" headerAction={previewButton} />;
-  }
-
-  const body =
-    failedKey === currentKey ? (
-      <div className="mermaid-block mermaid-block-error">Invalid Mermaid diagram</div>
-    ) : !svg || renderedKey !== currentKey ? (
-      <div className="mermaid-block mermaid-block-loading" aria-label="Rendering Mermaid diagram" />
-    ) : (
-      <div
-        className="mermaid-block"
-        dangerouslySetInnerHTML={{ __html: svg }}
-      />
-    );
-
-  return (
-    <div className="markdown-code-block">
-      <div className="markdown-code-header">
-        <span className="markdown-code-lang">mermaid</span>
-        {previewButton}
-      </div>
-      {body}
-    </div>
-  );
-}
-
-function CodeBlock({ code, lang, headerAction }: { code: string; lang: string; headerAction?: ReactNode }) {
-  const { isDark } = useTheme();
-  const [copied, setCopied] = useState(false);
-
-  const copy = () => {
-    copyText(code).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
-  };
-
-  return (
-    <div className="markdown-code-block">
-      <div className="markdown-code-header">
-        <span className="markdown-code-lang">{lang || "text"}</span>
-        <div className="markdown-code-actions">
-          {headerAction}
-          <button
-            onClick={copy}
-            className="markdown-code-action"
-          >
-            {copied ? "copied" : "copy"}
-          </button>
-        </div>
-      </div>
-      <SyntaxHighlighter
-        language={lang || "text"}
-        style={isDark ? vscDarkPlus : vs}
-        showLineNumbers
-        lineNumberStyle={{ color: "var(--text-dim)", fontStyle: "normal" }}
-        customStyle={{
-          margin: 0,
-          padding: "11px 13px",
-          fontSize: 12.5,
-          lineHeight: 1.62,
-          borderRadius: 0,
-          background: "color-mix(in srgb, var(--bg) 92%, var(--bg-panel))",
-        }}
-        codeTagProps={{ style: { fontFamily: "var(--font-mono)" } }}
-      >
-        {code}
-      </SyntaxHighlighter>
     </div>
   );
 }

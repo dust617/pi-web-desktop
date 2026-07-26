@@ -2,8 +2,9 @@ import { stat } from "fs/promises";
 import { resolve } from "path";
 import { createAgentSessionServices, getAgentDir, type SettingsManager } from "@earendil-works/pi-coding-agent";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import { loadModelsWithCache, type ModelsData } from "@/lib/models-cache";
-import { modelLoadResponse } from "@/lib/model-load-response";
+import { loadModelsWithCache, withModelRuntimeError, type ModelsData } from "@/lib/models-cache";
+import { withSafeModelLoadFailure } from "@/lib/model-load-response";
+import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
 
 export const dynamic = "force-dynamic";
 
@@ -49,6 +50,7 @@ async function loadModels(cwd: string): Promise<ModelsData> {
   const agentDir = getAgentDir();
   const services = await createAgentSessionServices({ cwd, agentDir });
   const available = await services.modelRuntime.getAvailable();
+  const modelError = services.modelRuntime.getError();
   const settings: SettingsManager = services.settingsManager;
   const enabledModels = settings.getEnabledModels();
   const visible = filterByExactEnabledModels(available, enabledModels);
@@ -70,8 +72,19 @@ async function loadModels(cwd: string): Promise<ModelsData> {
     defaultModel = { provider, modelId };
   }
 
-  return { models: Object.fromEntries(nameMap), modelList, defaultModel, thinkingLevels, thinkingLevelMaps };
+  return withModelRuntimeError(
+    { models: Object.fromEntries(nameMap), modelList, defaultModel, thinkingLevels, thinkingLevelMaps },
+    modelError,
+  );
 }
+
+const EMPTY_MODELS: ModelsData = {
+  models: {},
+  modelList: [],
+  defaultModel: null,
+  thinkingLevels: {},
+  thinkingLevelMaps: {},
+};
 
 export async function GET(req: Request) {
   const requestedCwd = new URL(req.url).searchParams.get("cwd") || process.cwd();
@@ -86,6 +99,14 @@ export async function GET(req: Request) {
   if (!cwdStat.isDirectory()) {
     return Response.json({ error: `Not a directory: ${cwd}` }, { status: 400 });
   }
+  const allowedRoots = await getAllowedFileRoots();
+  if (!isExistingFilePathAllowed(cwd, allowedRoots)) {
+    return Response.json({ error: "Access denied" }, { status: 403 });
+  }
 
-  return modelLoadResponse(() => loadModelsWithCache(cwd, () => loadModels(cwd)));
+  try {
+    return Response.json(await loadModelsWithCache(cwd, () => loadModels(cwd)));
+  } catch {
+    return Response.json(withSafeModelLoadFailure(EMPTY_MODELS));
+  }
 }

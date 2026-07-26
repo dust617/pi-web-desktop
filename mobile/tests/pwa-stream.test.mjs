@@ -216,6 +216,34 @@ if (!concurrentFinalPreserved) throw new Error("FAIL same-session stale history 
 pass++;
 console.log("  ok   same-session stale history cannot erase a finalized message");
 
+const desktopAnchorRetriesAfterHistoryFailure = await vm.runInContext(`(async () => {
+  const anchor = {style:{display:"none"},textContent:""};
+  document.getElementById = (id) => id === "ctxAnchor" ? anchor : null;
+  currentView = "chat";
+  currentSessionId = "desktop-session";
+  viewLoadId = 40;
+  messageRevision = 40;
+  currentMessages = [{role:"user",content:"older mobile question"}];
+  stickToBottom = false;
+  refreshLastUserQuestion();
+  let historyCalls = 0;
+  notifyDone = () => {};
+  api = async (path) => {
+    if (path.includes("/history")) {
+      historyCalls++;
+      if (historyCalls === 1) throw new Error("temporary offline");
+      return {messages:[{role:"user",content:"new desktop question"},{role:"assistant",content:[{type:"text",text:"done"}]}]};
+    }
+    return {running:false};
+  };
+  handleSSEEvent({type:"agent_end"});
+  await new Promise((resolve) => setTimeout(resolve, 550));
+  return historyCalls === 2 && lastUserQuestion === "new desktop question" && anchor.textContent === "💬 new desktop question" && anchor.style.display === "";
+})()`, context);
+if (!desktopAnchorRetriesAfterHistoryFailure) throw new Error("FAIL desktop-originated question retries a failed history reconciliation");
+pass++;
+console.log("  ok   desktop-originated question retries a failed history reconciliation");
+
 const smartScrollPauses = vm.runInContext(`(() => {
   const content = {scrollHeight:1000, scrollTop:100, clientHeight:400};
   const jump = {style:{display:"none"}};

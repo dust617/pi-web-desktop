@@ -37,6 +37,10 @@ export interface ManagedProcessOptions {
   readinessIntervalMs?: number;
   /** 就绪检查超时（毫秒），默认 30000 */
   readinessTimeoutMs?: number;
+  /** Restart policy overrides used by deterministic tests. */
+  restartDelaysMs?: number[];
+  restartWindowMs?: number;
+  maxRestartsInWindow?: number;
 }
 
 export type ProcessState = 
@@ -73,11 +77,11 @@ export class ManagedProcess extends EventEmitter {
 
   // Restart budget tracking
   private restartTimestamps: number[] = [];
-  private readonly RESTART_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
-  private readonly MAX_RESTARTS_IN_WINDOW = 5;
+  private restartWindowMs: number;
+  private maxRestartsInWindow: number;
 
   // Backoff delays
-  private readonly BACKOFF_DELAYS = [2000, 5000, 10000, 30000, 60000];
+  private backoffDelays: number[];
   private currentBackoffIndex = 0;
 
   // Stability tracking
@@ -95,6 +99,11 @@ export class ManagedProcess extends EventEmitter {
     if (options.autoRestart === undefined) options.autoRestart = true;
     if (options.readinessIntervalMs === undefined) options.readinessIntervalMs = 500;
     if (options.readinessTimeoutMs === undefined) options.readinessTimeoutMs = 30000;
+    this.restartWindowMs = options.restartWindowMs ?? 10 * 60 * 1000;
+    this.maxRestartsInWindow = options.maxRestartsInWindow ?? 5;
+    this.backoffDelays = options.restartDelaysMs?.length
+      ? [...options.restartDelaysMs]
+      : [2000, 5000, 10000, 30000, 60000];
   }
 
   /**
@@ -114,6 +123,7 @@ export class ManagedProcess extends EventEmitter {
     this.signal = null;
     this.lastError = null;
 
+    let startedChild: ChildProcess | null = null;
     try {
       const spawnOptions: SpawnOptions = {
         cwd: this.options.cwd,
@@ -126,6 +136,7 @@ export class ManagedProcess extends EventEmitter {
       if (!this.child) {
         throw new Error("Failed to spawn child process");
       }
+      startedChild = this.child;
 
       // Wait a tick for PID to be assigned
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -144,8 +155,15 @@ export class ManagedProcess extends EventEmitter {
         }
       }, this.options.startTimeoutMs);
 
-      // Handle child events - bind to instance to avoid losing reference
+      // Subscribe before readiness checks so adapters can use the first
+      // startup output as readiness evidence.
       const childRef = this.child;
+      childRef.stdout?.on("data", (data: Buffer) => {
+        this.emit("stdout", { data: data.toString() });
+      });
+      childRef.stderr?.on("data", (data: Buffer) => {
+        this.emit("stderr", { data: data.toString() });
+      });
       childRef.on("error", (err) => {
         this.lastError = err.message;
         this.handleExit(null, null);
@@ -178,8 +196,15 @@ export class ManagedProcess extends EventEmitter {
         this.startTimer = null;
       }
       this.lastError = err instanceof Error ? err.message : String(err);
-      this.setState("failed");
-      this.emit("failed", { error: this.lastError });
+      // An adapter can classify an exit and block the process while readiness
+      // is pending. Preserve that terminal state instead of overwriting it.
+      if (
+        this.getStatus().state !== "blocked" &&
+        (this.child === null || this.child === startedChild)
+      ) {
+        this.setState("failed");
+        this.emit("failed", { error: this.lastError });
+      }
       throw err;
     }
   }
@@ -267,10 +292,20 @@ export class ManagedProcess extends EventEmitter {
   }
 
   /**
+   * Whether the child is alive while it is starting or running. Readiness
+   * probes must use this rather than isHealthy(), because start() does not
+   * transition to running until after the probe succeeds.
+   */
+  isAlive(): boolean {
+    return (this.state === "starting" || this.state === "running") &&
+      this.child !== null && this.child.exitCode === null;
+  }
+
+  /**
    * 检查进程是否健康
    */
   isHealthy(): boolean {
-    return this.state === "running" && this.child !== null && this.child.exitCode === null;
+    return this.state === "running" && this.isAlive();
   }
 
   /**
@@ -354,10 +389,10 @@ export class ManagedProcess extends EventEmitter {
     // Check restart budget
     const now = Date.now();
     this.restartTimestamps = this.restartTimestamps.filter(
-      (t) => now - t < this.RESTART_WINDOW_MS
+      (t) => now - t < this.restartWindowMs
     );
 
-    if (this.restartTimestamps.length >= this.MAX_RESTARTS_IN_WINDOW) {
+    if (this.restartTimestamps.length >= this.maxRestartsInWindow) {
       this.block("crash_loop: too many restarts in 10 minutes");
       this.emit("crashLoop", { restartCount: this.restartCount });
       return;
@@ -369,11 +404,11 @@ export class ManagedProcess extends EventEmitter {
       this.restartTimestamps = [];
     }
 
-    const delay = this.BACKOFF_DELAYS[this.currentBackoffIndex] || this.BACKOFF_DELAYS[this.BACKOFF_DELAYS.length - 1];
+    const delay = this.backoffDelays[this.currentBackoffIndex] || this.backoffDelays[this.backoffDelays.length - 1];
     const jitter = Math.random() * 1000; // Add up to 1s jitter
     const totalDelay = delay + jitter;
 
-    this.currentBackoffIndex = Math.min(this.currentBackoffIndex + 1, this.BACKOFF_DELAYS.length - 1);
+    this.currentBackoffIndex = Math.min(this.currentBackoffIndex + 1, this.backoffDelays.length - 1);
     this.restartCount++;
     this.restartTimestamps.push(now);
 

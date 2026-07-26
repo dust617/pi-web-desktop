@@ -10,8 +10,8 @@
 
 import { ManagedProcess, ManagedProcessOptions } from "./managed-process";
 import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
 
 export interface FrpcProfile {
   /** 服务器地址 */
@@ -39,6 +39,8 @@ export interface FrpcConfig {
   expectedHash?: string;
   /** frpc 版本 */
   version: string;
+  /** Override command arguments for a platform wrapper or an isolated test. */
+  args?: string[];
 }
 
 export type FrpcErrorCategory = 
@@ -56,12 +58,16 @@ export interface FrpcError {
   raw?: string;
 }
 
-export class FrpcAdapter {
+export class FrpcAdapter extends EventEmitter {
   private process: ManagedProcess | null = null;
   private logBuffer: string[] = [];
   private readonly MAX_LOG_LINES = 100;
+  private readonly redactedValues = new Set<string>();
+  private pendingLogChunk = "";
+  private errorEventCount = 0;
 
   constructor(private config: FrpcConfig) {
+    super();
     // Validate binary exists and hash matches
     this.validateBinary();
   }
@@ -126,10 +132,12 @@ auth.token = "{{ .Envs.${tokenEnvVar} }}"
       FRPC_USER: profile.proxyName,
       FRPC_TOKEN: token,
     };
+    this.redactedValues.add(token);
+    this.pendingLogChunk = "";
 
     const options: ManagedProcessOptions = {
       command: this.config.binaryPath,
-      args: ["-c", this.config.configPath],
+      args: this.config.args ?? ["-c", this.config.configPath],
       env,
       name: "frpc",
       startTimeoutMs: 15000,
@@ -143,26 +151,32 @@ auth.token = "{{ .Envs.${tokenEnvVar} }}"
     this.process = new ManagedProcess(options);
 
     // Listen to process events
-    this.process.on("exited", ({ code, signal }) => {
+    this.process.on("exited", () => {
+      this.flushPendingLog();
       const error = this.classifyError();
-      this.emit("error", error);
+      if (!error.retryable) this.process?.block(`frpc_${error.category}`);
+      this.errorEventCount += 1;
+      this.emitFrpcError(error);
     });
 
     this.process.on("stateChange", ({ from, to }) => {
       this.emit("stateChange", { from, to });
     });
+    this.process.on("stdout", ({ data }) => this.appendLog(data));
+    this.process.on("stderr", ({ data }) => this.appendLog(data));
 
-    // Capture logs
-    if (this.process["child"]) {
-      this.process["child"].stdout?.on("data", (data) => {
-        this.appendLog(data.toString());
-      });
-      this.process["child"].stderr?.on("data", (data) => {
-        this.appendLog(data.toString());
-      });
+    const errorCountBeforeStart = this.errorEventCount;
+    try {
+      await this.process.start();
+    } catch (err) {
+      // A process can fail before emitting an exit event (for example a spawn
+      // error). Surface that case without duplicating an already-classified
+      // child exit.
+      if (this.errorEventCount === errorCountBeforeStart) {
+        this.emitFrpcError(this.classifyError());
+      }
+      throw err;
     }
-
-    await this.process.start();
   }
 
   /**
@@ -181,8 +195,9 @@ auth.token = "{{ .Envs.${tokenEnvVar} }}"
    * 检查 frpc 是否就绪
    */
   private async checkReadiness(): Promise<boolean> {
-    // Check if process is still alive
-    if (!this.process || !this.process.isHealthy()) {
+    // start() remains in "starting" until this probe succeeds. Therefore a
+    // readiness probe must check child liveness, not running health.
+    if (!this.process || !this.process.isAlive()) {
       return false;
     }
 
@@ -261,18 +276,53 @@ auth.token = "{{ .Envs.${tokenEnvVar} }}"
     };
   }
 
-  private appendLog(line: string): void {
-    this.logBuffer.push(line.trim());
-    if (this.logBuffer.length > this.MAX_LOG_LINES) {
+  private appendLog(chunk: string): void {
+    const lines = (this.pendingLogChunk + chunk).split(/\r?\n/);
+    this.pendingLogChunk = lines.pop() ?? "";
+    for (const line of lines) this.commitLogLine(line);
+  }
+
+  private flushPendingLog(): void {
+    if (!this.pendingLogChunk) return;
+    this.commitLogLine(this.pendingLogChunk);
+    this.pendingLogChunk = "";
+  }
+
+  private commitLogLine(line: string): void {
+    if (!line.trim()) return;
+    const redacted = this.redactLog(line.trim());
+    this.logBuffer.push(redacted);
+    this.emit("log", { line: redacted });
+    while (this.logBuffer.length > this.MAX_LOG_LINES) {
       this.logBuffer.shift();
     }
+  }
+
+  private redactLog(line: string): string {
+    let redacted = line;
+    for (const value of this.redactedValues) {
+      if (value) redacted = redacted.split(value).join("[REDACTED]");
+    }
+    return redacted.replace(/\b(token|authorization)\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]");
+  }
+
+  private emitFrpcError(error: FrpcError): void {
+    this.emit("frpcError", error);
+    // Node treats an unhandled "error" event as an exception. Preserve the
+    // conventional event for subscribers without making a failed tunnel crash
+    // a caller that only awaits start().
+    if (this.listenerCount("error") > 0) this.emit("error", error);
   }
 
   /**
    * 获取日志缓冲区
    */
   getLogBuffer(): string[] {
-    return [...this.logBuffer];
+    // A readiness message can be split across pipe chunks and not end in a
+    // newline yet. Include the accumulated fragment for matching, but redact
+    // it before it leaves the adapter.
+    const pending = this.pendingLogChunk.trim();
+    return pending ? [...this.logBuffer, this.redactLog(pending)] : [...this.logBuffer];
   }
 
   /**
@@ -291,8 +341,4 @@ auth.token = "{{ .Envs.${tokenEnvVar} }}"
     };
   }
 
-  private emit(event: string, data: any): void {
-    // EventEmitter pattern - in real implementation, extend EventEmitter
-    console.log(`[frpc] ${event}:`, data);
-  }
 }

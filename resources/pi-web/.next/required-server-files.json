@@ -2,8 +2,8 @@
   "version": 1,
   "config": {
     "env": {
-      "NEXT_PUBLIC_APP_VERSION": "0.8.0",
-      "NEXT_PUBLIC_PI_VERSION": "0.81.1"
+      "NEXT_PUBLIC_APP_VERSION": "0.8.1",
+      "NEXT_PUBLIC_PI_VERSION": "0.82.1"
     },
     "webpack": null,
     "typescript": {
@@ -107,7 +107,7 @@
         "transform": "lodash/{{member}}"
       }
     },
-    "outputFileTracingRoot": "D:\\PI-web-desktop",
+    "outputFileTracingRoot": "D:\\PI-web-desktop\\resources\\pi-web",
     "allowedDevOrigins": [
       "192.168.*.*"
     ],
@@ -178,6 +178,7 @@
       "imgOptTimeoutInSeconds": 7,
       "imgOptMaxInputPixels": 268402689,
       "imgOptSequentialRead": null,
+      "imgOptSkipMetadata": null,
       "isrFlushToDisk": true,
       "workerThreads": false,
       "optimizeCss": false,
@@ -316,12 +317,12 @@
       "@earendil-works/pi-tui"
     ],
     "turbopack": {
-      "root": "D:\\PI-web-desktop"
+      "root": "D:\\PI-web-desktop\\resources\\pi-web"
     },
     "distDirRoot": ".next"
   },
   "appDir": "D:\\PI-web-desktop\\resources\\pi-web",
-  "relativeAppDir": "resources\\pi-web",
+  "relativeAppDir": "",
   "files": [
     ".next\\package.json",
     ".next\\routes-manifest.json",

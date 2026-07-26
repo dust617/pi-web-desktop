@@ -129,6 +129,47 @@ async function testManagedProcess() {
     proc.unblock();
     check("MP4: unblock clears blocked state", proc.getStatus().state === "stopped");
   }
+
+  // Test 5: an adapter-classified startup failure must retain blocked state.
+  {
+    const proc = new ManagedProcess({
+      command: process.execPath,
+      args: ["-e", "setTimeout(() => {}, 10000)"],
+      name: "test-blocked-during-readiness",
+      autoRestart: false,
+      readinessIntervalMs: 10,
+      readinessTimeoutMs: 100,
+      readinessCheck: async () => {
+        proc.block("auth_failed");
+        return false;
+      },
+    });
+    await proc.start().catch(() => {});
+    check("MP5: blocked state survives a failed readiness start", proc.getStatus().state === "blocked");
+    await proc.stop();
+  }
+
+  // Test 6: restart budget enters crash-loop block without production delays.
+  {
+    const proc = new ManagedProcess({
+      command: process.execPath,
+      args: ["-e", "process.exit(1)"],
+      name: "test-crash-loop",
+      autoRestart: true,
+      readinessCheck: async () => false,
+      readinessIntervalMs: 5,
+      readinessTimeoutMs: 30,
+      restartDelaysMs: [5],
+      restartWindowMs: 1000,
+      maxRestartsInWindow: 2,
+    });
+    await proc.start().catch(() => {});
+    await sleep(1000);
+    const status = proc.getStatus();
+    check("MP6: repeated exits enter crash-loop block", status.state === "blocked", JSON.stringify(status));
+    check("MP6: crash-loop reason is retained", status.blockedReason?.includes("crash_loop"));
+    await proc.stop();
+  }
 }
 
 async function testFrpcAdapter() {
@@ -154,28 +195,112 @@ async function testFrpcAdapter() {
     check("FA1: TOML does not contain raw token", !toml.includes("secret123"));
   }
 
-  // Test 2: Adapter instantiation (simplified)
-  {
+  const profile = {
+    serverAddr: "example.com",
+    serverPort: 7000,
+    proxyName: "test-proxy",
+    localAddr: "127.0.0.1",
+    localPort: 62810,
+    remotePort: 8443,
+    protocol: "tcp",
+  };
+
+  function createMockAdapter(scenario) {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "frpc-test-"));
     const configPath = path.join(tmpDir, "frpc.toml");
     fs.writeFileSync(configPath, "# test config");
+    const adapter = new FrpcAdapter({
+      configPath,
+      binaryPath: process.execPath,
+      args: [MOCK_FRPC, configPath],
+      version: "0.50.0",
+    });
+    return { adapter, tmpDir };
+  }
 
+  // Test 2: successful startup consumes fragmented child output while
+  // ManagedProcess is still starting. This covers pipe chunk reassembly and
+  // the readiness-deadlock regression.
+  {
+    const { adapter, tmpDir } = createMockAdapter("fragmented_success");
+    const logs = [];
+    adapter.on("log", ({ line }) => logs.push(line));
+    const originalScenario = process.env.MOCK_FRPC_SCENARIO;
+    const originalDelay = process.env.MOCK_FRPC_DELAY;
+    process.env.MOCK_FRPC_SCENARIO = "fragmented_success";
+    process.env.MOCK_FRPC_DELAY = "20";
     try {
-      const adapter = new FrpcAdapter({
-        configPath,
-        binaryPath: process.execPath,
-        version: "0.50.0",
-      });
-
+      await adapter.start(profile, "test-token-not-for-output");
       const status = adapter.getStatus();
-      check("FA2: adapter can be instantiated", adapter !== null);
-      check("FA2: initial state is not running", !status.running);
-      check("FA2: initial pid is null", status.pid === null);
+      check("FA2: mock frpc reaches running without readiness deadlock", status.running, JSON.stringify(status));
+      check("FA2: fragmented startup logs are reassembled", logs.some((line) => line.includes("start proxy success")));
+      check("FA2: captured logs are redacted", !logs.join("\n").includes("test-token-not-for-output"));
+      await adapter.stop();
     } catch (err) {
-      check("FA2: adapter instantiation succeeded", false, err.message);
+      check("FA2: mock frpc startup succeeded", false, err.message);
+    } finally {
+      if (originalScenario === undefined) delete process.env.MOCK_FRPC_SCENARIO;
+      else process.env.MOCK_FRPC_SCENARIO = originalScenario;
+      if (originalDelay === undefined) delete process.env.MOCK_FRPC_DELAY;
+      else process.env.MOCK_FRPC_DELAY = originalDelay;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  }
 
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+  // Test 3: a real mock failure is classified through EventEmitter events;
+  // the token itself is never included in emitted log assertions or output.
+  {
+    const { adapter, tmpDir } = createMockAdapter("auth_failed");
+    const errors = [];
+    adapter.on("frpcError", (error) => errors.push(error));
+    const originalScenario = process.env.MOCK_FRPC_SCENARIO;
+    const originalDelay = process.env.MOCK_FRPC_DELAY;
+    process.env.MOCK_FRPC_SCENARIO = "auth_failed";
+    process.env.MOCK_FRPC_DELAY = "20";
+    try {
+      let threw = false;
+      try {
+        await adapter.start(profile, "test-token-not-for-output");
+      } catch {
+        threw = true;
+      }
+      await sleep(30);
+      check("FA3: auth failure rejects startup", threw);
+      check("FA3: auth failure is classified through frpcError event", errors.some((error) => error.category === "auth_failed" && error.retryable === false));
+      check("FA3: auth failure emits one classified error", errors.length === 1, JSON.stringify(errors));
+      await adapter.stop();
+    } finally {
+      if (originalScenario === undefined) delete process.env.MOCK_FRPC_SCENARIO;
+      else process.env.MOCK_FRPC_SCENARIO = originalScenario;
+      if (originalDelay === undefined) delete process.env.MOCK_FRPC_DELAY;
+      else process.env.MOCK_FRPC_DELAY = originalDelay;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }
+
+  // Test 4: transient network exits are classified retryable and do not use
+  // the permanent auth/config blocking path.
+  {
+    const { adapter, tmpDir } = createMockAdapter("network_error");
+    const errors = [];
+    adapter.on("frpcError", (error) => errors.push(error));
+    const originalScenario = process.env.MOCK_FRPC_SCENARIO;
+    const originalDelay = process.env.MOCK_FRPC_DELAY;
+    process.env.MOCK_FRPC_SCENARIO = "network_error";
+    process.env.MOCK_FRPC_DELAY = "20";
+    try {
+      await adapter.start(profile, "test-token-not-for-output").catch(() => {});
+      await sleep(30);
+      check("FA4: network failure is retryable", errors.some((error) => error.category === "network_error" && error.retryable));
+      check("FA4: network failure emits one classified error", errors.length === 1, JSON.stringify(errors));
+      await adapter.stop();
+    } finally {
+      if (originalScenario === undefined) delete process.env.MOCK_FRPC_SCENARIO;
+      else process.env.MOCK_FRPC_SCENARIO = originalScenario;
+      if (originalDelay === undefined) delete process.env.MOCK_FRPC_DELAY;
+      else process.env.MOCK_FRPC_DELAY = originalDelay;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   }
 }
 

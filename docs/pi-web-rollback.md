@@ -10,11 +10,11 @@
 桌面应用 `src/main.ts` 中的 `tryApplyStagedPiWebUpgrade()` 函数实现了自动升级和回滚：
 
 ### 升级流程
-1. 检测 `.backup/pi-web-*-staged` 目录
-2. 比较 staged 版本与当前版本
-3. 将当前 `resources/pi-web` 重命名为 `.backup/pi-web-{version}-old-{timestamp}`
-4. 将 staged 目录重命名为 `resources/pi-web`
-5. 如果步骤 4 失败，立即恢复旧版本
+1. 只接受 manifest 已验证的 `.backup/pi-web-*-staged` 目录（source build、必要 route、tests 与 provenance 均通过）。
+2. 比较 staged 版本与当前版本；不接受降级或“任选第一个 staged 目录”。
+3. 将当前 `resources/pi-web` 重命名为 `.backup/pi-web-{version}-old-{timestamp}`。
+4. 将 staged 目录重命名为 `resources/pi-web`。
+5. 如果步骤 4 或启动 smoke 失败，立即恢复旧版本。
 
 ### 回滚保护
 - 升级前自动备份当前版本到 `.backup/pi-web-{version}-old-{timestamp}`
@@ -36,12 +36,10 @@ ls .backup/ | grep pi-web-0.8.0-old
 ```
 
 ### 步骤 3：恢复备份
+> 仅限**完全退出**的开发态目录；不要对正在运行的目录执行删除/覆盖。先改名保留失败现场，再恢复备份。
 ```bash
-# 删除当前版本（如果存在）
-rm -rf resources/pi-web
-
-# 恢复 0.8.0 备份
-cp -r .backup/pi-web-0.8.0-old-{timestamp} resources/pi-web
+mv resources/pi-web .backup/pi-web-0.8.1-failed-{timestamp}
+mv .backup/pi-web-0.8.0-old-{timestamp} resources/pi-web
 ```
 
 ### 步骤 4：验证
@@ -61,8 +59,8 @@ cat resources/pi-web/package.json | grep version
 |---|---|---|---|
 | 0.8.0 原始 | 0.8.0 | `.backup/pi-web-0.8.0-old-20260726165214` | ✓ 完整（含 .next） |
 | 0.8.0 staged | 0.8.0 | `.backup/pi-web-0.8.0-staged` | ✓ 完整 |
-| 0.8.1 staged | 0.8.1 | `.backup/pi-web-0.8.1-staged` | ✓ 完整（待交换） |
-| 当前运行 | 0.8.0 | `resources/pi-web` | ✓ 正常 |
+| 0.8.1 staged | 0.8.1 | `.backup/pi-web-0.8.1-staged` | ✓ source build/test 已验证；保留作审计/恢复来源 |
+| 当前运行 | 0.8.1 | `resources/pi-web` | ✓ 已交换；发布前仍需 MobileBridge 合同与 installer rollback 演练 |
 
 ---
 
@@ -72,10 +70,12 @@ cat resources/pi-web/package.json | grep version
 - [ ] `resources/pi-web/package.json` 版本正确
 - [ ] `.next/BUILD_ID` 存在
 - [ ] 桌面应用启动正常
-- [ ] Web UI 可访问（http://localhost:3000）
+- [ ] Web UI 可访问（由桌面 runtime 分配的 loopback 端口，不假定 3000）
 - [ ] 会话列表加载正常
 - [ ] Agent 通信正常（发送消息、接收响应）
-- [ ] MobileBridge 正常（如有移动端）
+- [ ] MobileBridge 正常（如有移动端），包括 archived-sessions GET/PUT 合同
+- [ ] 会话右键复制 ID/JSONL 路径、归档/取消归档正常（下游 adapter）
+- [ ] 参照 `docs/pi-web-downstream-delta.md` 检查下游差异未遗漏
 
 ---
 

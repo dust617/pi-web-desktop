@@ -37,6 +37,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
 const BACKUP_DIR = join(ROOT, ".backup");
 const MANIFEST_PATH = join(ROOT, "scripts", "pi-web-patch-manifest.json");
+const UI_ADAPTER_PATCH = join(ROOT, "scripts", "pi-web-ui-adapters.patch");
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -260,6 +261,54 @@ export async function PUT(req: Request) {
 `;
       writeFileSync(join(routeDir, "route.ts"), routeContent, "utf8");
       log("    Added archived-sessions route");
+    } else if (patch.id === "directory-browser-windows-paths") {
+      const browserPath = join(stageDir, "lib", "directory-browser.ts");
+      let browser = readFileSync(browserPath, "utf8");
+      // Upstream selects the host-platform `path` object for serialized POSIX
+      // paths, which changes `/Users/x` into `\\Users\\x` on Windows.
+      if (browser.includes(": path;")) {
+        browser = browser.replace(": path;", ": path.posix;");
+        writeFileSync(browserPath, browser, "utf8");
+        log("    Patched directory browser path semantics");
+      } else if (!browser.includes(": path.posix;")) {
+        fail("directory-browser parent implementation did not match expected upstream source");
+      }
+    } else if (patch.id === "isolated-build-home") {
+      const buildScriptPath = join(stageDir, "bin", "pi-web-build.mjs");
+      const buildScript = `#!/usr/bin/env node
+import { spawnSync } from "node:child_process";
+import { mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+const buildHome = join(packageRoot, ".build-home");
+mkdirSync(buildHome, { recursive: true });
+const result = spawnSync(
+  process.execPath,
+  [join(packageRoot, "node_modules", "next", "dist", "bin", "next"), "build", "--webpack"],
+  {
+    cwd: packageRoot,
+    env: { ...process.env, HOME: buildHome, USERPROFILE: buildHome },
+    stdio: "inherit",
+  },
+);
+if (result.error) throw result.error;
+process.exit(result.status ?? 1);
+`;
+      writeFileSync(buildScriptPath, buildScript, "utf8");
+
+      const pkgPath = join(stageDir, "package.json");
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+      pkg.scripts = { ...pkg.scripts, build: "node bin/pi-web-build.mjs" };
+      writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n", "utf8");
+
+      const ignorePath = join(stageDir, ".gitignore");
+      const ignore = existsSync(ignorePath) ? readFileSync(ignorePath, "utf8") : "";
+      if (!ignore.includes("/.build-home/")) {
+        writeFileSync(ignorePath, `${ignore.replace(/\s*$/, "")}\n/.build-home/\n`, "utf8");
+      }
+      log("    Added isolated pi-web build home");
     } else if (patch.id === "test-script") {
       // Add test script to package.json
       const pkgPath = join(stageDir, "package.json");
@@ -273,43 +322,33 @@ export async function PUT(req: Request) {
       } else {
         log("    test script already present, skipping");
       }
+    } else if (patch.id === "session-ui-adapters") {
+      // Keep UI-specific downstream behavior as one small, fail-closed patch.
+      // It is intentionally applied after core source patches; a changed
+      // upstream component makes staging fail rather than silently dropping
+      // archive/copy/recovery behavior on upgrade.
+      if (!existsSync(UI_ADAPTER_PATCH)) fail(`Missing UI adapter patch: ${UI_ADAPTER_PATCH}`);
+      // `stageDir` is intentionally not a Git worktree, so use GNU patch
+      // rather than `git apply` (which can silently skip paths outside a repo).
+      const checked = spawnSync("patch", ["--dry-run", "--batch", "-l", "-p3", "-i", UI_ADAPTER_PATCH], { cwd: stageDir, encoding: "utf8" });
+      if (checked.status !== 0) fail(`Session UI adapter patch no longer applies; adapt it before staging:\n${checked.stderr || checked.stdout}`);
+      const applied = spawnSync("patch", ["--batch", "-l", "-p3", "-i", UI_ADAPTER_PATCH], { cwd: stageDir, encoding: "utf8" });
+      if (applied.status !== 0) fail(`Session UI adapter patch failed:\n${applied.stderr || applied.stdout}`);
+      log("    Applied session UI adapters (copy/archive/error/compaction/model recovery)");
     }
   }
 
   // ─── Step 6: Build ─────────────────────────────────────────────────────
-  log("Step 6: Building .next...");
-  let buildFromSource = true;
+  log("Step 6: Building .next from patched source...");
   try {
     run("npm run build", { cwd: stageDir });
-    log("Build completed");
+    log("Source build completed");
   } catch (err) {
-    // If build fails due to environment issues (e.g., Windows permission errors),
-    // fall back to using the upstream .next and document the limitation.
-    log(`Build failed: ${err.message}`);
-    log("Falling back to upstream .next (archived-sessions route will need manual addition)");
-
-    // Extract upstream .next from the tarball
-    const extractDir = join(tmpClone, "extract");
-    mkdirSync(extractDir, { recursive: true });
-
-    // Change to extract directory and use relative path to avoid Windows path issues
-    const prevCwd = process.cwd();
-    process.chdir(extractDir);
-    try {
-      run(`tar xzf "../agegr-pi-web-${targetVersion}.tgz"`);
-    } finally {
-      process.chdir(prevCwd);
-    }
-
-    // Copy upstream .next to staging
-    const upstreamNext = join(extractDir, "package", ".next");
-    const stagedNext = join(stageDir, ".next");
-    if (existsSync(stagedNext)) {
-      rmSync(stagedNext, { recursive: true, force: true });
-    }
-    run(`xcopy /E /I /Q /Y "${upstreamNext}" "${stagedNext}"`);
-    log("Copied upstream .next to staging directory");
-    buildFromSource = false;
+    // A staged runtime is never allowed to borrow an upstream build artifact:
+    // it would omit downstream routes and make the stage unverifiable.
+    rmSync(stageDir, { recursive: true, force: true });
+    rmSync(tmpClone, { recursive: true, force: true });
+    fail(`Source build failed; staging aborted without fallback: ${err.message}`);
   }
 
   // ─── Step 7: Verify BUILD_ID and routes ────────────────────────────────
@@ -322,7 +361,8 @@ export async function PUT(req: Request) {
   const buildId = readFileSync(buildIdPath, "utf8").trim();
   log(`  BUILD_ID: ${buildId}`);
 
-  // Verify archived-sessions route exists (only if built from source)
+  // This downstream API is required by MobileBridge and must be compiled from
+  // the patched staged source, not merely present in TypeScript source.
   const archivedRoute = join(
     stageDir,
     ".next",
@@ -332,14 +372,12 @@ export async function PUT(req: Request) {
     "archived-sessions",
     "route.js"
   );
-  if (buildFromSource) {
-    if (!existsSync(archivedRoute)) {
-      fail("archived-sessions route not found in build output");
-    }
-    log("  archived-sessions route: present");
-  } else {
-    log("  archived-sessions route: NOT in upstream .next (needs manual build in clean environment)");
+  if (!existsSync(archivedRoute)) {
+    rmSync(stageDir, { recursive: true, force: true });
+    rmSync(tmpClone, { recursive: true, force: true });
+    fail("archived-sessions route not found in source build output");
   }
+  log("  archived-sessions route: present");
 
   // Verify pi-coding-agent version
   const piPkgPath = join(
@@ -359,8 +397,21 @@ export async function PUT(req: Request) {
     log(`  pi-coding-agent: ${piPkg.version}`);
   }
 
-  // ─── Step 8: Write stage manifest ──────────────────────────────────────
-  log("Step 8: Writing stage manifest...");
+  // ─── Step 8: Run staged tests ──────────────────────────────────────────
+  // Tests run only after the source build and required route checks, but
+  // always before the manifest makes this directory eligible for a swap.
+  log("Step 8: Running staged pi-web tests...");
+  try {
+    run("npm test", { cwd: stageDir });
+    log("Staged pi-web tests completed");
+  } catch (err) {
+    rmSync(stageDir, { recursive: true, force: true });
+    rmSync(tmpClone, { recursive: true, force: true });
+    fail(`Staged pi-web tests failed; staging aborted: ${err.message}`);
+  }
+
+  // ─── Step 9: Write stage manifest ──────────────────────────────────────
+  log("Step 9: Writing stage manifest...");
 
   const stageManifest = {
     version: targetVersion,
@@ -370,14 +421,13 @@ export async function PUT(req: Request) {
     shasum: expectedShasum,
     integrity: expectedIntegrity,
     buildId,
-    buildFromSource,
+    buildFromSource: true,
+    requiredCompiledRoutes: ["/api/archived-sessions"],
     stagedAt: new Date().toISOString(),
     nodeVersion: process.version,
     patches: manifest.patches.map((p) => p.id),
     piCodingAgentVersion: manifest.upstream.piCodingAgentVersion,
-    notes: buildFromSource
-      ? null
-      : "Used upstream .next due to build environment issues. archived-sessions route needs manual build.",
+    tests: { command: "npm test", passed: true },
   };
 
   writeFileSync(
@@ -398,7 +448,7 @@ export async function PUT(req: Request) {
   log(`  BUILD_ID: ${buildId}`);
   log(`  Patches applied: ${manifest.patches.map((p) => p.id).join(", ")}`);
   log("");
-  log("Next: restart the desktop app to swap staged version into resources/pi-web/");
+  log("Next: restart the desktop app to swap the verified staged version into resources/pi-web/");
   log("═══════════════════════════════════════════════════════════");
 }
 

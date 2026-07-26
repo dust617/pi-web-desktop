@@ -30,6 +30,24 @@
       "removalCondition": "Archive management migrated into authenticated MobileBridge BFF"
     },
     {
+      "id": "directory-browser-windows-paths",
+      "origin": "local",
+      "purpose": "Preserve POSIX parent-path semantics when the web service runs on Windows",
+      "upstreamStatus": "not-in-upstream",
+      "files": ["lib/directory-browser.ts"],
+      "test": "npm test covers POSIX, Windows drive, and UNC parent paths",
+      "removalCondition": "Upstream directory browser selects path.posix for serialized POSIX paths"
+    },
+    {
+      "id": "isolated-build-home",
+      "origin": "local",
+      "purpose": "Run Next build with an isolated HOME/USERPROFILE so tracing does not scan unreadable Windows profile junctions",
+      "upstreamStatus": "not-in-upstream",
+      "files": ["bin/pi-web-build.mjs", "package.json", ".gitignore"],
+      "test": "npm run build succeeds with a real outputFileTracingRoot and compiled archived-sessions route",
+      "removalCondition": "Upstream build no longer reads user-home paths during output tracing on Windows"
+    },
+    {
       "id": "test-script",
       "origin": "local",
       "purpose": "Add test script entry for downstream unit tests (lib/*.test.mjs, components/*.test.mjs)",
@@ -37,6 +55,15 @@
       "files": ["package.json"],
       "test": "npm test runs downstream tests",
       "removalCondition": "Upstream includes equivalent test script"
+    },
+    {
+      "id": "session-ui-adapters",
+      "origin": "local",
+      "purpose": "Keep downstream session copy/archive UI and safe prompt/compaction/model recovery as a fail-closed adapter patch",
+      "upstreamStatus": "not-in-upstream",
+      "files": ["components/SessionSidebar.tsx", "hooks/useAgentSession.ts", "app/api/models/route.ts", "lib/session-copy.ts", "lib/prompt-failure.ts", "lib/model-load-response.ts"],
+      "test": "npm test covers copy, prompt/model recovery; build validates UI adapter types; manual archive/copy/compaction smoke",
+      "removalCondition": "Upstream offers stable extension hooks for session-row actions and equivalent recovery UX"
     }
   ],
   "droppedPatches": [
