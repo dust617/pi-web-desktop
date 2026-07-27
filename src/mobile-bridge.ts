@@ -31,7 +31,7 @@ export interface MobileBridgeConfig {
   staticDir?: string;
   /** Reference to the PiWebRuntime for dynamic port discovery. */
   runtime: PiWebRuntime;
-  /** Allowed origins for mutation requests (e.g. ["https://pi.tt56677.top:8443"]). */
+  /** Allowed origins for mutation requests (e.g. ["https://pi.example.test:8443"]). */
   allowedOrigins?: string[];
   /** Bind address (default 127.0.0.1). Set to "0.0.0.0" for LAN/IPv6 port-forward. */
   bindHost?: string;
@@ -40,7 +40,7 @@ export interface MobileBridgeConfig {
 }
 
 /** Built-in public origin for this project's tunnel hostname. */
-export const DEFAULT_MOBILE_ORIGIN = "https://pi.tt56677.top:8443";
+export const DEFAULT_MOBILE_ORIGIN = "https://pi.example.test:8443";
 
 /**
  * Single source of truth for the public PWA origin, shared by the Electron

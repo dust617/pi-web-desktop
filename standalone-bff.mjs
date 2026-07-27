@@ -46,7 +46,7 @@ bridge
     console.log(`[standalone-bff] listening on ${BIND}:${port}`);
     writeFileSync(
       "D:/PI-web-desktop/bff-pairing-code.txt",
-      `port=${port}\ncode=${code}\nurl=https://pi.tt56677.top:8443/mobile/\n`
+      `port=${port}\ncode=${code}\nurl=https://pi.example.test:8443/mobile/\n`
     );
   })
   .catch((err) => {

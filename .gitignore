@@ -55,3 +55,6 @@ DESENSITIZE_REPORT.md
 # Publish pipeline local-only artifacts (real secrets + temp snapshot) - NEVER commit
 publish/desensitize-map.json
 publish/.tmp/
+
+# Build output (never commit)
+resources/pi-web/.next/

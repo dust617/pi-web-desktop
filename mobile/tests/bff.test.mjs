@@ -8,7 +8,7 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { MobileBridge } = require("../../dist/mobile-bridge.js");
 
-const ORIGIN_OK = "https://pi.tt56677.top:8443";
+const ORIGIN_OK = "https://pi.example.test:8443";
 const ORIGIN_BAD = "https://evil.example.com";
 const BFF_PORT = 62899;
 
