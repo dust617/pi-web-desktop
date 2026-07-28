@@ -1,0 +1,19 @@
+{
+  "version": "0.8.1",
+  "gitTag": "v0.8.1",
+  "gitTagPeeledCommit": "b4f4576b890de92b1def79a56ad1fb2841ee84c1",
+  "npmGitHead": "ae58c82bae41b2583a3569299d4995f591a13b5c",
+  "shasum": "056334d2410364a5b1a873547a60f9e02b52ba7e",
+  "integrity": "sha512-UYunaSj2lDAC8EOiyV9VenQwOVFZ2xB6FBrkyYev/2sGNMiRr5fVkU0ktGfOyUhKciVo2lqBxwoz/M8RV6z35A==",
+  "buildId": "l0CiKzT_81sgMiO7ty15w",
+  "buildFromSource": false,
+  "stagedAt": "2026-07-26T08:52:01.547Z",
+  "nodeVersion": "v24.15.0",
+  "patches": [
+    "outputFileTracingRoot",
+    "archived-sessions-route",
+    "test-script"
+  ],
+  "piCodingAgentVersion": "0.82.1",
+  "notes": "Used upstream .next due to build environment issues. archived-sessions route needs manual build."
+}
