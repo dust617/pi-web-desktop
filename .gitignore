@@ -1,0 +1,59 @@
+# Dependencies
+node_modules/
+resources/pi-web/node_modules/
+
+# Build output (TypeScript → JS)
+dist/
+
+# Backup & logs
+.backup/
+*.log
+
+# Test & debug artifacts
+.test/
+.pi-subagents/
+nul
+
+# Local Pi operational memory and telemetry (never commit)
+resources/pi-web/.pi/
+.pi/memory/
+.pi/session-audit/
+.pi/images/
+.pi/orchestrator-telemetry.v2.jsonl
+archive/
+/STATUS.md
+/KEYSTORE.md
+session-exports/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Mobile runtime state / secrets (never commit)
+bff-pairing-code.txt
+bff-sessions.json
+*.pid
+*-status.json
+.ns-watchdog.lock/
+.tunnel-watchdog.lock/
+
+# Build / package artifacts (large; produced by `npm run dist`)
+release/
+
+# Downloaded deploy-time binaries (fetch separately, not vendored)
+resources/cloudflared/
+
+# Unrelated local subproject (own .git) + runtime tunnel url (never commit)
+goofish-mcp-server/
+.lhr-url.txt
+
+# Sensitive infra/ops docs (VPS IP, Xray/frp config, vendor IDs) - NEVER commit
+mobile/vps-relay/
+
+# Local desensitization report (lists secrets to filter) - NEVER commit
+DESENSITIZE_REPORT.md
+
+# Publish pipeline local-only artifacts (real secrets + temp snapshot) - NEVER commit
+publish/desensitize-map.json
+publish/.tmp/
