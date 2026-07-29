@@ -1,6 +1,6 @@
 {
   "name": "pi-web-desktop",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Electron thin shell for Pi Web – desktop edition",
   "main": "dist/main.js",
   "scripts": {
@@ -15,8 +15,9 @@
     "memory:check": "node scripts/check-memory.mjs",
     "memory:archive": "node scripts/archive-memory-task.mjs",
     "pack": "npm run build && electron-builder --dir",
-    "dist": "npm run build && electron-builder",
-    "test:tunnel": "node tests/tunnel.test.mjs"
+    "dist": "npm run build && electron-builder --publish never",
+    "test:tunnel": "node tests/tunnel.test.mjs",
+    "test:router": "npm --prefix packages/model-router-auto test"
   },
   "keywords": [
     "pi",

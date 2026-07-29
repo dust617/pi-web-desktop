@@ -224,6 +224,21 @@ async function main() {
   r = await req(P, "POST", "/mobile/api/v1/sessions/s1/messages", { headers: { Cookie: cookie, Origin: ORIGIN_OK }, body: { message: "y".repeat(70000) } });
   check("T15 message >64KB -> 413 (P1-2)", r.status === 413, "got " + r.status);
 
+  lastAgentBody = null;
+  const smallImage = Buffer.from("mobile-image-test").toString("base64");
+  r = await req(P, "POST", "/mobile/api/v1/sessions/s1/messages", {
+    headers: { Cookie: cookie, Origin: ORIGIN_OK },
+    body: { message: "", images: [{ type: "image", data: smallImage, mimeType: "image/png" }] },
+  });
+  check("T15b valid image-only message -> 200", r.status === 200, "got " + r.status);
+  const imagePrompt = JSON.parse(lastAgentBody ?? "null");
+  check("T15b forwards only validated image DTO", imagePrompt?.images?.[0]?.data === smallImage && imagePrompt.images[0].mimeType === "image/png");
+  r = await req(P, "POST", "/mobile/api/v1/sessions/s1/messages", {
+    headers: { Cookie: cookie, Origin: ORIGIN_OK },
+    body: { message: "x", images: [{ type: "image", data: "not-base64?", mimeType: "image/png" }] },
+  });
+  check("T15b rejects malformed image attachment", r.status === 400, "got " + r.status);
+
   r = await req(P, "POST", "/mobile/api/v1/sessions/s1/model", { headers: { Cookie: cookie, Origin: ORIGIN_OK }, body: { provider: "prov", modelId: "m1" } });
   check("T16 set model -> 2xx", r.status >= 200 && r.status < 300, "got " + r.status + " " + r.text().slice(0, 80));
 

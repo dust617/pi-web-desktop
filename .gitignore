@@ -14,12 +14,10 @@ dist/
 .pi-subagents/
 nul
 
-# Local Pi operational memory and telemetry (never commit)
+# Root-level Pi operational state, memory, telemetry and generated media (never commit)
 resources/pi-web/.pi/
+/.pi/
 .pi/memory/
-.pi/session-audit/
-.pi/images/
-.pi/orchestrator-telemetry.v2.jsonl
 archive/
 /STATUS.md
 /KEYSTORE.md

@@ -8,11 +8,11 @@
  *   - 排除内部运维文档（EXCLUDE）。
  *   - 对文本文件应用 publish/desensitize-map.json 的替换（真实值仅存于该 gitignored 文件）。
  *   - 复扫快照，确认 0 个敏感命中后才允许推送。
- *   - --push 时在快照内 git init 新历史并 force-push 到 origin/main。
+ *   - 此脚本永不推送 GitHub；公开发布必须从经审阅的快照创建独立分支，
+ *     以显式 refspec 进行 fast-forward 更新。
  *
  * 用法：
- *   node scripts/publish-github.mjs            # 仅构建快照 + 扫描（默认，安全）
- *   node scripts/publish-github.mjs --push     # 构建 + 扫描通过后 force-push（破坏性，需确认）
+ *   node scripts/publish-github.mjs            # 构建快照 + 扫描（默认，安全）
  *   node scripts/publish-github.mjs --keep     # 构建后保留快照目录供人工检查
  */
 import { execFileSync } from "node:child_process";
@@ -24,12 +24,12 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MAP_FILE = path.join(ROOT, "publish", "desensitize-map.json");
 const TMP = path.join(ROOT, "publish", ".tmp");
 const SNAP = path.join(TMP, "snapshot");
-const REMOTE = "https://github.com/dust617/pi-web-desktop.git";
-const BRANCH = "main";
-
 const args = new Set(process.argv.slice(2));
-const DO_PUSH = args.has("--push");
 const KEEP = args.has("--keep");
+if (args.has("--push")) {
+  console.error("✗ --push 已禁用：请从审阅后的快照创建公开发布分支，禁止此脚本覆盖 main。");
+  process.exit(64);
+}
 
 // 内部运维/规划文档：不发布（含敏感运维细节，对公开项目无用）
 const EXCLUDE_EXACT = new Set([
@@ -54,6 +54,19 @@ const TEXT_EXT = new Set([
 
 function git(argsArr, opts = {}) {
   return execFileSync("git", argsArr, { cwd: ROOT, encoding: "utf8", ...opts });
+}
+
+function gitBytes(argsArr) {
+  // Generated Pi Web chunks can exceed Node's 1 MiB execFileSync default.
+  return execFileSync("git", argsArr, { cwd: ROOT, maxBuffer: 64 * 1024 * 1024 });
+}
+
+function requireCleanTree() {
+  const status = git(["status", "--porcelain", "--untracked-files=all"]).trim();
+  if (status) {
+    console.error("✗ 工作区不干净：快照只能从已提交的 HEAD 构建。请先提交或清理变更后重试。");
+    process.exit(1);
+  }
 }
 
 function isExcluded(rel) {
@@ -85,24 +98,23 @@ function looksBinary(buf) {
 }
 
 function build() {
+  requireCleanTree();
   const map = loadMap();
   fs.rmSync(TMP, { recursive: true, force: true });
   fs.mkdirSync(SNAP, { recursive: true });
 
-  const tracked = git(["ls-files"]).split("\n").map((s) => s.trim()).filter(Boolean);
+  const tracked = git(["ls-tree", "-r", "--name-only", "HEAD"]).split("\n").map((s) => s.trim()).filter(Boolean);
   let copied = 0, scrubbed = 0, skipped = 0, binary = 0;
 
   for (const rel of tracked) {
     if (isExcluded(rel)) { skipped++; continue; }
-    const src = path.join(ROOT, rel);
     const dst = path.join(SNAP, rel);
-    if (!fs.existsSync(src)) continue;
     fs.mkdirSync(path.dirname(dst), { recursive: true });
 
     const ext = path.extname(rel).toLowerCase();
     const base = path.basename(rel).toLowerCase();
     const isText = TEXT_EXT.has(ext) || base === ".gitignore" || base === ".npmrc";
-    const buf = fs.readFileSync(src);
+    const buf = gitBytes(["show", `HEAD:${rel}`]);
 
     if (isText && !looksBinary(buf)) {
       const out = desensitize(buf.toString("utf8"), map.replacements);
@@ -119,9 +131,26 @@ function build() {
   return map;
 }
 
+const GENERIC_SENSITIVE_PATTERNS = [
+  ["private-key", /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----/i],
+  ["access-token", /\b(?:ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}|AIza[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{16,})\b/i],
+  ["bearer-token", /\bBearer\s+[A-Za-z0-9._-]{16,}/i],
+  ["credential-assignment", /\b(?:api[_-]?key|token|password|secret|cookie)\s*[:=]\s*["'][A-Za-z0-9._-]{12,}["']/i],
+  ["basic-auth-url", /https?:\/\/[^/\s@]+:[^/\s@]+@/i],
+  ["user-home-path", /[A-Za-z]:[\\/]Users[\\/](?!(?:<[^>]+>|user(?:name)?|example|test)(?:[\\/]|$))[^\s"'`\\/]+/i],
+  ["private-ip", /\b(?:10\.(?:\d{1,3}\.){2}\d{1,3}|192\.168\.(?:\d{1,3}\.)\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.(?:\d{1,3}\.)\d{1,3})\b/],
+];
+
+function isGenericScanExempt(rel) {
+  return rel.startsWith("resources/pi-web/.next/")
+    || rel.startsWith("scripts/tests/")
+    || /(?:^|\/)test(?:s)?\/|\.test\.[cm]?[jt]sx?$/.test(rel)
+    || /(?:^|\/)(?:package-lock\.json|bun\.lock)$/.test(rel);
+}
+
 function scan(map) {
-  const patterns = map.scanPatterns || [];
-  const hits = [];
+  const mappedPatterns = map.scanPatterns || [];
+  const hits = new Set();
   function walk(dir) {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, e.name);
@@ -130,26 +159,17 @@ function scan(map) {
       if (looksBinary(buf)) continue;
       const text = buf.toString("utf8");
       const rel = path.relative(SNAP, full).replace(/\\/g, "/");
-      for (const p of patterns) {
-        if (p && text.includes(p)) hits.push(`${rel}: 含 "${p}"`);
+      if (mappedPatterns.some((p) => p && text.includes(p))) hits.add(`${rel}: mapped-sensitive-pattern`);
+      // Detection rules and generated/test/lock artifacts contain deliberate signatures,
+      // not released runtime data; exact local-map scanning still covers every text file.
+      if (rel === "scripts/publish-github.mjs" || isGenericScanExempt(rel)) continue;
+      for (const [kind, pattern] of GENERIC_SENSITIVE_PATTERNS) {
+        if (pattern.test(text)) hits.add(`${rel}: ${kind}`);
       }
     }
   }
   walk(SNAP);
-  return hits;
-}
-
-function push() {
-  git(["init", "-q"], { cwd: SNAP });
-  git(["checkout", "-q", "-b", BRANCH], { cwd: SNAP });
-  git(["add", "-A"], { cwd: SNAP });
-  git(["-c", "user.name=dust617", "-c", "user.email=dust617@users.noreply.github.com",
-       "commit", "-q", "-m",
-       "feat: pi-web-desktop — Electron desktop shell + mobile PWA bridge (public release)"],
-      { cwd: SNAP });
-  git(["remote", "add", "origin", REMOTE], { cwd: SNAP });
-  git(["push", "--force", "origin", BRANCH], { cwd: SNAP, stdio: "inherit" });
-  console.log(`✓ 已 force-push 全新干净历史到 ${REMOTE} (${BRANCH})`);
+  return [...hits];
 }
 
 // ── main ──
@@ -162,10 +182,6 @@ if (hits.length) {
 }
 console.log("✓ 脱敏复扫通过：0 个敏感命中");
 
-if (DO_PUSH) {
-  push();
-} else {
-  console.log(`\n快照就绪于：${SNAP}`);
-  console.log("人工检查后，运行 `node scripts/publish-github.mjs --push` 推送。");
-}
-if (!KEEP && DO_PUSH) fs.rmSync(TMP, { recursive: true, force: true });
+console.log(`\n快照就绪于：${SNAP}`);
+console.log("请在独立公开 worktree 中审阅快照、执行验证，并用显式 refspec 推送审阅分支；本脚本不会推送。");
+if (!KEEP) console.log("提示：下次运行会覆盖此临时快照；需要持续保留时使用 --keep。 ");

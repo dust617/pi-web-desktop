@@ -11,7 +11,7 @@ const errors = [];
 const warnings = [];
 
 const specs = [
-  ['AGENTS.md', 4096, 80, true],
+  ['AGENTS.md', 8192, 160, true],
   ['.pi/memory/STATUS.md', 2048, 32, true],
   ['.pi/memory/FACTS.md', 65536, 800, true],
   ['task_plan.md', 4096, 80, true],

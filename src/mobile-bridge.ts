@@ -166,6 +166,11 @@ const MOBILE_TOOL_ARGS_CHARS = 300;
 const MOBILE_TOOL_RESULT_CHARS = 800;
 const MOBILE_ASSISTANT_TEXT_CHARS = 64_000;
 const MOBILE_HISTORY_MESSAGES = 120;
+const MOBILE_MAX_MESSAGE_BYTES = 64 * 1024;
+const MOBILE_MAX_REQUEST_BYTES = 10 * 1024 * 1024;
+const MOBILE_MAX_IMAGES = 5;
+const MOBILE_MAX_IMAGE_BYTES = 2 * 1024 * 1024;
+const MOBILE_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 
 function capMobileText(value: string, limit: number, suffix = "…"): { text: string; truncated: boolean } {
   if (value.length <= limit) return { text: value, truncated: false };
@@ -207,15 +212,11 @@ export function slimMobileMessage(message: any): any {
       return { type: "toolResult", content: text, ...(truncated ? { truncated: true, originalLength: raw.length } : {}) };
     }
     if (type === "image") {
-      // Preserve image data for mobile preview; bound the base64 payload to
-      // avoid blowing up the wire for huge attachments.
-      const data = block.data ?? block.source?.data ?? "";
-      const mimeType = block.mimeType ?? block.source?.media_type ?? "image/png";
-      if (data && data.length > 10 * 1024 * 1024) {
-        messageTruncated = true;
-        return { type: "text", text: "[图片过大，请在桌面端查看]", truncated: true };
-      }
-      return { type: "image", data, mimeType };
+      // History/SSE must never expose original base64 or provider-side image
+      // metadata. The mobile client retains locally attached-image previews;
+      // historical images fall back to this safe desktop-view placeholder.
+      messageTruncated = true;
+      return { type: "text", text: "[图片内容请在桌面端查看]", truncated: true };
     }
     return { type: typeof type === "string" ? type : "unknown" };
   };
@@ -701,15 +702,13 @@ export class MobileBridge {
       errorResponse(res, 401, "UNAUTHORIZED", "Login required");
       return false;
     }
-    // Origin check on mutations: logged as warning for tunnel/PWA scenarios
-    // where the Origin may not match the configured allowedOrigins. The session
-    // cookie + SameSite=Strict already provides CSRF protection.
+    // Fail closed for state-changing requests. SameSite cookies are a useful
+    // second CSRF layer, not a substitute for enforcing the public tunnel/PWA
+    // origin boundary.
     const method = (req.method ?? "GET").toUpperCase();
-    if (method !== "GET" && method !== "HEAD") {
-      const origin = req.headers.origin ?? "";
-      if (origin && !this.isAllowedOrigin(origin)) {
-        console.warn(`[mobile-bridge] Origin not in allowed list (session valid): ${origin}`);
-      }
+    if (method !== "GET" && method !== "HEAD" && !this.isAllowedOrigin(req.headers.origin ?? "")) {
+      errorResponse(res, 403, "FORBIDDEN", "Origin not allowed");
+      return false;
     }
     return true;
   }
@@ -1299,7 +1298,7 @@ export class MobileBridge {
   private async handleSendMessage(sessionId: string, req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     let body: any;
     try {
-      const raw = await readBody(req, 10 * 1024 * 1024);
+      const raw = await readBody(req, MOBILE_MAX_REQUEST_BYTES);
       body = parseJsonBody(raw);
     } catch (err: any) {
       if (err.message === "BODY_TOO_LARGE") return errorResponse(res, 413, "INVALID_REQUEST", "Message too large (max 10MB)");
@@ -1307,12 +1306,41 @@ export class MobileBridge {
     }
 
     const message = body?.message;
-    if (typeof message !== "string" || message.length === 0) {
-      errorResponse(res, 400, "INVALID_REQUEST", "Missing or empty 'message' field");
+    if (typeof message !== "string") {
+      errorResponse(res, 400, "INVALID_REQUEST", "Missing 'message' field");
+      return;
+    }
+    if (Buffer.byteLength(message, "utf8") > MOBILE_MAX_MESSAGE_BYTES) {
+      errorResponse(res, 413, "INVALID_REQUEST", "Message too large (max 64KB)");
       return;
     }
 
-    const images = Array.isArray(body?.images) ? body.images : undefined;
+    const candidateImages = body?.images;
+    if (candidateImages !== undefined && !Array.isArray(candidateImages)) {
+      errorResponse(res, 400, "INVALID_REQUEST", "Images must be an array");
+      return;
+    }
+    if (candidateImages && candidateImages.length > MOBILE_MAX_IMAGES) {
+      errorResponse(res, 413, "INVALID_REQUEST", `Too many images (max ${MOBILE_MAX_IMAGES})`);
+      return;
+    }
+    const images = candidateImages?.map((image: unknown) => {
+      if (!image || typeof image !== "object") return null;
+      const { type, data, mimeType } = image as { type?: unknown; data?: unknown; mimeType?: unknown };
+      if (type !== "image" || typeof data !== "string" || typeof mimeType !== "string" || !MOBILE_IMAGE_MIME_TYPES.has(mimeType)) return null;
+      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(data) || data.length % 4 !== 0) return null;
+      const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+      const decodedBytes = (data.length / 4) * 3 - padding;
+      return decodedBytes > 0 && decodedBytes <= MOBILE_MAX_IMAGE_BYTES ? { type: "image" as const, data, mimeType } : null;
+    });
+    if (images?.some((image: { type: "image"; data: string; mimeType: string } | null) => image === null)) {
+      errorResponse(res, 400, "INVALID_REQUEST", "Invalid image attachment");
+      return;
+    }
+    if (!message && !images?.length) {
+      errorResponse(res, 400, "INVALID_REQUEST", "Message or image is required");
+      return;
+    }
 
     try {
       const upstream = await this.piWebFetch(`/api/agent/${encodeURIComponent(sessionId)}`, {

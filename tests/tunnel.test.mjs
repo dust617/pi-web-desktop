@@ -30,6 +30,15 @@ async function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function waitUntil(predicate, timeoutMs, pollMs = 10) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return true;
+    await sleep(pollMs);
+  }
+  return predicate();
+}
+
 async function testManagedProcess() {
   console.log("\n=== ManagedProcess Tests ===");
 
@@ -164,7 +173,9 @@ async function testManagedProcess() {
       maxRestartsInWindow: 2,
     });
     await proc.start().catch(() => {});
-    await sleep(1000);
+    // Process creation is materially slower on some Windows hosts; wait for the
+    // state transition instead of assuming three crash/restart cycles fit 1s.
+    await waitUntil(() => proc.getStatus().state === "blocked", 2500);
     const status = proc.getStatus();
     check("MP6: repeated exits enter crash-loop block", status.state === "blocked", JSON.stringify(status));
     check("MP6: crash-loop reason is retained", status.blockedReason?.includes("crash_loop"));

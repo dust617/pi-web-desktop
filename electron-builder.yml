@@ -2,6 +2,10 @@ appId: com.piweb.desktop
 productName: Pi Web Desktop
 copyright: Copyright © 2026
 
+# GitHub Releases are created only after an explicit source/tag review. Prevent
+# electron-builder from inferring a publisher from the repository metadata.
+publish: null
+
 directories:
   output: release
   buildResources: resources

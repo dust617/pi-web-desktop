@@ -38,6 +38,12 @@
 
 > 📂 移动端代码与文档集中在 [`mobile/`](mobile/) 子项目；互通桥实现位于 [`src/mobile-bridge.ts`](src/mobile-bridge.ts)。
 
+### 🧭 智能路由与编排
+
+- 新增 [`packages/model-router-auto/`](packages/model-router-auto/) 子项目：在推理边界根据任务阶段、上下文、安全约束与停滞信号选择合适模型。
+- 内置 fail-closed 权限门、日志脱敏、遥测轮转、监督提示与隔离审查沙箱。
+- 源码只提供匿名配置模板；真实 Provider、模型映射、认证、会话状态、遥测和日志均不入库。详见子项目 [README](packages/model-router-auto/README.md)。
+
 ---
 
 ## 🚀 快速开始
@@ -162,6 +168,8 @@ pi-web-desktop/
 ├── mobile/                  # 移动端子项目（文档、测试、规划）
 │   ├── README.md            # 移动端子项目说明
 │   └── tests/               # 移动端测试（BFF / PWA / 打包一致性）
+├── packages/
+│   └── model-router-auto/   # 智能路由与编排扩展（仅匿名示例配置）
 ├── scripts/                 # 构建与内存治理脚本
 ├── package.json
 ├── electron-builder.yml
@@ -176,6 +184,7 @@ pi-web-desktop/
 npm run test:mobile     # 移动端：runtime + BFF + PWA(stream/navigation/shell)
 npm run test:package    # 打包一致性（ASAR parity）
 npm run test:memory     # 内存治理脱敏守卫
+npm run test:router     # 智能路由子项目测试
 npm run build           # TypeScript 编译
 ```
 
@@ -185,7 +194,7 @@ npm run build           # TypeScript 编译
 
 - **Electron** 40 – 桌面壳
 - **TypeScript** 5.9 – 主进程代码
-- **pi-web** 0.8.1 – AI 编码助手 Web UI（锁定版本内置）
+- **pi-web** 0.8.1 + 本地安全/兼容性修复 – AI 编码助手 Web UI（锁定运行时）
 - **Next.js** 16 – pi-web 前端框架
 - **Cloudflare Tunnel** – 可选公网 HTTPS 接入
 - **PWA** – Service Worker + Manifest，移动端接近原生体验
@@ -199,7 +208,7 @@ npm run build           # TypeScript 编译
 - 锁定经过验证的 pi-web 构建版本；下游差异采用“外挂优先”的最小 adapter，而非覆盖上游核心；
 - 在其上增加桌面壳（右键菜单、托盘、单实例、崩溃恢复）与移动端互通桥。
 
-下游能力清单、升级 Gate 与迁移原则见 [`docs/pi-web-downstream-delta.md`](docs/pi-web-downstream-delta.md)。
+下游能力清单、升级 Gate 与迁移原则见 [`docs/pi-web-downstream-delta.md`](docs/pi-web-downstream-delta.md)。公开版本与安全兼容性边界见 [`docs/releases/v0.3.3-public.md`](docs/releases/v0.3.3-public.md)：内置包元数据仍为 0.8.1；本项目不宣称完整上游 0.8.3 或未验证的 0.8.9 适配。
 
 > 如果你也在做 pi-web 的桌面/移动集成，欢迎参考本项目的 `src/mobile-bridge.ts`（版本化 BFF + 配对码认证 + SSE 适配）与 `mobile/` 子项目实践。
 
