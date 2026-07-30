@@ -1,0 +1,2785 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=2.5,user-scalable=yes,viewport-fit=cover,interactive-widget=resizes-content">
+<meta name="theme-color" content="#1a1a1a" id="themeColorMeta">
+<meta name="color-scheme" content="dark light" id="colorSchemeMeta">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/mobile/manifest.json">
+<title>Pi Web Mobile</title>
+<script>
+// Apply the saved theme BEFORE first paint. Doing it here (synchronously in
+// <head>) instead of in the main bundle means: (1) no dark->light flash on load,
+// (2) the user's explicit day/night choice survives every reload/restart even if
+// the main script's init runs late or the page is force-refreshed, which was the
+// "toggle flashes white then reverts" bug. Falls back to the OS preference only
+// when the user has never chosen.
+(function () {
+  try {
+    var t = localStorage.getItem("piTheme");
+    if (t !== "light" && t !== "dark") {
+      // Default to DAY (light/white) unless the system *explicitly* reports a
+      // dark preference. Many Android browsers (e.g. Vivo) have a "daytime"
+      // mode that does NOT publish prefers-color-scheme:light, so keying off
+      // "prefers light" silently fell back to dark and the app never looked
+      // white. Keying off "prefers dark" instead makes white the default.
+      t = (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+    }
+    var de = document.documentElement;
+    if (t === "light") de.classList.add("light");
+    else de.classList.remove("light");
+    var meta = document.getElementById("themeColorMeta");
+    if (meta) meta.setAttribute("content", t === "light" ? "#f5f5f5" : "#1a1a1a");
+  } catch (e) { /* storage unavailable: default light */ }
+})();
+</script>
+<style>
+:root {
+  /* Declare the colour scheme explicitly so Android browsers with a forced
+     "night mode" (e.g. Vivo/OPPO/Xiaomi built-in darkening) do NOT invert our
+     colours — they respect a page that manages its own scheme. Without this the
+     browser re-darkens the light theme, which reads as "white flash then back
+     to dark" when toggling. */
+  color-scheme: dark;
+  --bg: #1a1a1a;
+  --surface: #242424;
+  --surface2: #2e2e2e;
+  --border: #3a3a3a;
+  --text: #e8e8e8;
+  --text2: #9ca3af;
+  --accent: #60a5fa;
+  --accent2: #93c5fd;
+  --danger: #ef5350;
+  --success: #66bb6a;
+  --user-bg: #1e293b;
+  --assistant-bg: #1a1a1a;
+  --tool-bg: #1f2937;
+  --radius: 12px;
+  --safe-bottom: max(env(safe-area-inset-bottom, 0px), 12px);
+  /* Top safe area — ADAPTIVE via the display-mode media query (see the
+     @media block below :root). Goal: do NOT waste vertical space in a normal
+     browser tab, while still clearing the notch / status bar in standalone /
+     fullscreen PWA mode. Baseline here covers display-mode: browser:
+       env() resolves to 0 when the browser chrome already reserved the
+       status-bar space, so we keep a tiny 8px breathing gap (max(env,8px)) —
+       enough that the header is not glued to the very top, but small so the
+       usable page stays large. If a phone browser runs an immersive status
+       bar (env>0), env wins and the header clears it. */
+  --safe-top: max(env(safe-area-inset-top, 0px), 8px);
+  --app-height: 100dvh;
+  --input-area-height: 112px;
+  --shadow: rgba(0, 0, 0, 0.5);
+  --anchor-bg: rgba(36, 36, 36, 0.94);
+  --thumb-bg: rgba(224, 224, 224, 0.58);
+  --thumb-shadow: rgba(0, 0, 0, 0.28);
+  --on-accent: #000;
+}
+/* Standalone / fullscreen PWA (display-mode: standalone | fullscreen |
+   window-controls-overlay): the status / task bar overlays the page, so we
+   add a fixed ~1cm (49px) on top of the env() notch inset to clear the notch
+   AND the status / task bar — 49px is the on-device-confirmed 'just right'
+   offset. In a normal browser tab this rule does NOT apply, so --safe-top
+   stays at the small max(env,8px) baseline above and the page stays large. */
+@media (display-mode: standalone), (display-mode: fullscreen), (display-mode: window-controls-overlay) {
+  :root { --safe-top: calc(env(safe-area-inset-top, 0px) + 49px); }
+}
+/* ── Light theme (matches desktop pi-web light) ─ */
+html.light {
+  /* `light dark` (not just `light`): declaring dark support stops Android
+     forced-darkening from inverting the light theme, while still preferring
+     light form controls/scrollbars. */
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --surface: #f5f5f5;
+  --surface2: #eeeeee;
+  --border: #e0e0e0;
+  --text: #1a1a1a;
+  --text2: #6b7280;
+  --accent: #2563eb;
+  --accent2: #1d4ed8;
+  --danger: #dc2626;
+  --success: #16a34a;
+  --user-bg: #eff6ff;
+  --assistant-bg: #ffffff;
+  --tool-bg: #f9fafb;
+  --shadow: rgba(0, 0, 0, 0.12);
+  --anchor-bg: rgba(245, 245, 245, 0.95);
+  --thumb-bg: rgba(90, 90, 90, 0.4);
+  --thumb-shadow: rgba(0, 0, 0, 0.12);
+  --on-accent: #ffffff;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+html,body { height:100%; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--text); font-size:15px; -webkit-tap-highlight-color:transparent; -webkit-text-size-adjust:100%; text-size-adjust:100%; }
+body { display:flex; flex-direction:column; overflow:hidden; height:100vh; height:var(--app-height, 100dvh); }
+
+/* ── Header ─ */
+.header { display:flex; align-items:center; gap:8px; padding:calc(12px + var(--safe-top)) 16px 12px; background:var(--surface); border-bottom:1px solid var(--border); min-height:calc(52px + var(--safe-top)); flex-shrink:0; }
+.header .back { background:none; border:none; color:var(--accent); font-size:20px; padding:4px 8px; cursor:pointer; }
+.header .title { flex:1; font-size:16px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.header .status { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+.header .status.ok { background:var(--success); }
+.header .status.err { background:var(--danger); }
+.header .status.loading { background:var(--accent); animation:pulse 1s infinite; }
+/* ── Theme toggle button (header) ─ */
+.header .theme-btn { background:none; border:1px solid var(--border); border-radius:8px; color:var(--text2); font-size:15px; width:32px; height:32px; display:flex; align-items:center; justify-content:center; cursor:pointer; flex-shrink:0; transition:color 0.15s, border-color 0.15s; padding:0; }
+.header .theme-btn:active { color:var(--accent); border-color:var(--accent); }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+/* ── Content ── */
+.content { flex:1; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch; }
+/* ── View transition animations ── */
+.content.view-enter-forward { animation: viewSlideInForward 0.22s ease-out both; }
+.content.view-enter-back { animation: viewSlideInBack 0.22s ease-out both; }
+@keyframes viewSlideInForward { from { opacity:0.35; transform:translateX(22px); } to { opacity:1; transform:translateX(0); } }
+@keyframes viewSlideInBack { from { opacity:0.35; transform:translateX(-22px); } to { opacity:1; transform:translateX(0); } }
+/* ── Pull-to-refresh indicator ── */
+.pull-refresh-indicator { position:fixed; top:calc(52px + var(--safe-top)); left:0; right:0; text-align:center; padding:12px; color:var(--accent); font-size:13px; font-weight:600; opacity:0; transform:translateY(-100%); transition:opacity 0.2s, transform 0.2s; pointer-events:none; z-index:60; background:var(--surface); }
+.pull-refresh-indicator.visible { opacity:1; transform:translateY(0); }
+.pull-refresh-indicator.refreshing { animation:pullPulse 0.8s infinite; }
+@keyframes pullPulse { 0%,100%{opacity:0.6} 50%{opacity:1} }
+
+/* ── Login ── */
+.login-wrap { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; padding:32px; gap:20px; }
+.login-wrap h1 { font-size:24px; color:var(--accent); }
+.login-wrap p { color:var(--text2); text-align:center; font-size:14px; }
+.login-wrap input { width:100%; max-width:280px; padding:14px 16px; border-radius:var(--radius); border:1px solid var(--border); background:var(--surface2); color:var(--text); font-size:24px; text-align:center; letter-spacing:8px; outline:none; }
+.login-wrap input:focus { border-color:var(--accent); }
+.login-wrap button { width:100%; max-width:280px; padding:14px; border-radius:var(--radius); border:none; background:var(--accent); color:var(--on-accent); font-size:16px; font-weight:600; cursor:pointer; }
+.login-wrap button:active { opacity:0.8; }
+.login-wrap .error { color:var(--danger); font-size:13px; min-height:20px; }
+
+/* ── List views ── */
+.list { padding:8px; }
+.list-item { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:14px 16px; margin-bottom:8px; cursor:pointer; transition:background 0.15s; }
+.list-item:active { background:var(--surface2); }
+.list-item .name { font-weight:600; font-size:15px; margin-bottom:4px; display:flex; align-items:center; gap:8px; }
+.list-item .name .dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--success); flex-shrink:0; margin-right:6px; vertical-align:middle; animation:pulse 1.5s infinite; }
+.list-item .meta { color:var(--text2); font-size:12px; display:flex; gap:12px; }
+.list-item .preview { color:var(--text2); font-size:13px; margin-top:6px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.empty { text-align:center; color:var(--text2); padding:48px 16px; font-size:14px; }
+/* ── New-session button (top of session list) ─ */
+.new-session-btn { display:flex; align-items:center; justify-content:center; gap:8px; margin:10px 8px 4px; padding:12px; border-radius:var(--radius); border:1.5px dashed var(--accent); background:transparent; color:var(--accent); font-size:14px; font-weight:600; cursor:pointer; transition:background 0.15s; }
+.new-session-btn:active { background:var(--surface2); }
+.new-session-btn:disabled { opacity:0.5; cursor:default; }
+
+/* ── Chat ── */
+.chat-messages { padding:12px 12px 8px; display:flex; flex-direction:column; gap:8px; }
+.msg { max-width:92%; padding:10px 14px; border-radius:var(--radius); font-size:14px; line-height:1.5; word-break:break-word; white-space:pre-wrap; }
+.msg.user { align-self:flex-end; background:var(--user-bg); border-bottom-right-radius:4px; }
+.msg.assistant { align-self:flex-start; background:var(--assistant-bg); border:1px solid var(--border); border-bottom-left-radius:4px; }
+.msg-model { font-size:11px; color:var(--text2); margin:0 0 4px; opacity:0.8; font-weight:500; }
+.msg.tool { align-self:flex-start; background:var(--tool-bg); border:1px solid var(--border); font-size:12px; font-family:monospace; max-height:200px; overflow:auto; }
+.msg.system { align-self:center; background:transparent; color:var(--text2); font-size:12px; padding:4px 8px; }
+.msg .thinking { color:var(--text2); font-style:italic; font-size:12px; border-left:2px solid var(--border); padding-left:8px; margin-bottom:6px; max-height:100px; overflow:hidden; }
+.msg .tool-call { background:var(--surface2); border-radius:6px; padding:6px 8px; margin:4px 0; font-size:12px; font-family:monospace; }
+.msg .tool-call .tc-name { color:var(--accent); font-weight:600; }
+.streaming-indicator { display:inline-block; width:6px; height:14px; background:var(--accent); animation:blink 0.8s infinite; vertical-align:middle; margin-left:2px; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+/* ── Streaming thinking preview (scrolling tail) ── */
+.streaming-thinking { color:var(--text2); font-style:italic; font-size:12px; border-left:2px solid var(--accent); padding-left:8px; margin-bottom:6px; max-height:80px; overflow:hidden; opacity:0.85; }
+.streaming-thinking-label { color:var(--accent); font-size:11px; font-weight:600; margin-bottom:2px; display:flex; align-items:center; gap:4px; }
+.streaming-thinking-label::before { content:''; display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--accent); animation:pulse 1s infinite; }
+/* ── Collapsible history blocks ── */
+.collapsible { border:1px solid var(--border); border-radius:6px; margin:4px 0; overflow:hidden; }
+.collapsible-header { display:flex; align-items:center; gap:6px; padding:6px 10px; background:var(--surface2); cursor:pointer; font-size:12px; color:var(--text2); user-select:none; }
+.collapsible-header:active { background:var(--surface); }
+.collapsible-header .chevron { transition:transform 0.15s; font-size:10px; }
+.collapsible.expanded .chevron { transform:rotate(90deg); }
+.collapsible-body { display:none; padding:8px 10px; font-size:12px; font-family:monospace; white-space:pre-wrap; word-break:break-all; max-height:300px; overflow:auto; background:var(--bg); border-top:1px solid var(--border); }
+.collapsible.expanded .collapsible-body { display:block; }
+.collapsible-header .badge { background:var(--surface); padding:1px 6px; border-radius:4px; font-size:10px; color:var(--text2); }
+.thinking-collapsed { color:var(--text2); font-style:italic; font-size:11px; padding:4px 8px; background:var(--surface2); border-radius:4px; margin:2px 0; cursor:pointer; }
+.thinking-collapsed:active { background:var(--surface); }
+
+/* ── Toast notification ── */
+.toast-msg { position:fixed; left:50%; top:50%; transform:translate(-50%,-50%); background:rgba(0,0,0,0.82); color:#fff; padding:10px 20px; border-radius:10px; font-size:13px; z-index:1000; pointer-events:none; animation:toastFade 1.8s ease forwards; white-space:nowrap; }
+@keyframes toastFade { 0%{opacity:0} 12%{opacity:1} 78%{opacity:1} 100%{opacity:0} }
+
+/* ── Input bar ── */
+#inputArea { flex:0 0 auto; min-height:0; }
+.input-bar { display:flex; gap:8px; padding:10px 12px; padding-bottom:calc(10px + var(--safe-bottom)); background:var(--surface); border-top:1px solid var(--border); flex-shrink:0; align-items:flex-end; }
+.input-bar textarea { flex:1; resize:none; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface2); color:var(--text); padding:12px 14px; font-size:16px; font-family:inherit; max-height:140px; min-height:48px; outline:none; line-height:1.4; }
+.input-bar textarea:focus { border-color:var(--accent); }
+.input-bar button { width:48px; height:48px; border-radius:50%; border:none; font-size:20px; cursor:pointer; flex-shrink:0; display:flex; align-items:center; justify-content:center; }
+.input-bar .send-btn { background:var(--accent); color:var(--on-accent); }
+.input-bar .abort-btn { background:var(--danger); color:#fff; }
+.input-bar button:disabled { opacity:0.4; cursor:default; }
+.input-bar .attach-btn { background:var(--surface2); color:var(--text2); font-size:22px; font-weight:700; width:42px; height:42px; }
+.input-bar .attach-btn.has-image { background:var(--accent); color:var(--on-accent); }
+
+/* ── Image preview strip ── */
+.image-preview-strip { display:flex; gap:6px; padding:6px 12px 0; overflow-x:auto; flex-shrink:0; }
+.image-preview-strip:empty { display:none; padding:0; }
+.image-preview-strip .img-thumb { position:relative; width:56px; height:56px; border-radius:8px; overflow:hidden; flex-shrink:0; border:1px solid var(--border); }
+.image-preview-strip .img-thumb img { width:100%; height:100%; object-fit:cover; }
+.image-preview-strip .img-thumb .remove-img { position:absolute; top:1px; right:1px; width:18px; height:18px; border-radius:50%; background:rgba(0,0,0,0.6); color:#fff; border:none; font-size:11px; line-height:1; cursor:pointer; display:flex; align-items:center; justify-content:center; }
+
+/* ── Inline images in messages ── */
+.msg .msg-image { margin:8px 0; }
+.msg .msg-image img { max-width:100%; max-height:300px; border-radius:8px; object-fit:contain; cursor:pointer; }
+.msg .msg-image img:active { opacity:0.8; }
+
+/* ── Full-screen image viewer ── */
+.image-viewer-overlay { position:fixed; inset:0; z-index:200; background:rgba(0,0,0,0.92); display:flex; align-items:center; justify-content:center; cursor:zoom-out; }
+.image-viewer-overlay img { max-width:95vw; max-height:90vh; object-fit:contain; }
+
+/* ── Jump-to-latest button (shown when new content arrives while scrolled up) ── */
+.jump-btn { position:fixed; left:50%; transform:translateX(-50%); bottom:calc(var(--input-area-height) + 8px); background:var(--accent); color:var(--on-accent); border:none; border-radius:16px; padding:7px 16px; font-size:13px; font-weight:600; box-shadow:0 2px 10px var(--shadow); z-index:50; cursor:pointer; }
+.jump-btn:active { opacity:0.8; }
+
+/* ── Sticky context anchor (latest user prompt, shown when scrolling up) ── */
+/* Pinned to the top of the scroll viewport so that while the user reads back
+   through history they always see "what is the current question". Hidden when
+   at the bottom (the live conversation is already in view there). Frosted bar
+   with a soft fade-in so it reads as a deliberate, living element. */
+.ctx-anchor {
+  position: sticky; top: 0; z-index: 20;
+  /* Left edge = 12px, flush with the message column's left edge so the bar and
+     the conversation share one vertical baseline. Right edge = 26px, clearing
+     the now-thicker custom scrollbar rail (thumb ~21px + 2px inset ≈ rightmost
+     ~24px) by a clean ~2px gap, so the bar never sits under the rail. The
+     12/26 asymmetry is purely the rail's footprint, not a misalignment. */
+  margin: 0 26px 8px 12px; padding: 10px 13px;
+  background: var(--anchor-bg);
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  border: 1px solid var(--border); border-radius: 11px;
+  /* Per request: a bigger BAR with SMALLER, non-bold text — the deliberate
+     size contrast (chunky frosted block vs. quiet 12.5px regular type) is the
+     point. Three clamped lines so the current question reads in full without
+     hogging the screen; line-height opened to 1.4 so the three lines breathe
+     and the block gains its height from content, not from empty padding. Text
+     wraps normally and fills the inner width edge-to-edge. */
+  color: var(--text); font-size: 12.5px; line-height: 1.4; font-weight: 400;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden; text-overflow: ellipsis; white-space: normal;
+  box-shadow: 0 3px 12px var(--shadow);
+  pointer-events: none;
+  animation: ctxIn 0.22s ease both;
+}
+@keyframes ctxIn { from { opacity: 0; } to { opacity: 1; } }
+
+/* ── Model bar ── */
+.model-bar { display:flex; align-items:center; gap:8px; padding:6px 12px; background:var(--surface); border-top:1px solid var(--border); flex-shrink:0; font-size:12px; color:var(--text2); }
+.model-bar select { flex:1; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:4px 6px; font-size:12px; outline:none; max-width:180px; }
+.model-bar .ctx { margin-left:auto; white-space:nowrap; flex-shrink:0; padding:3px 7px; border:1px solid var(--border); border-radius:999px; background:var(--surface2); color:var(--text2); font-variant-numeric:tabular-nums; }
+/* Custom model dropdown */
+.model-dropdown { position:relative; flex:1; min-width:0; max-width:200px; }
+.model-dropdown .model-trigger { background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:4px 8px; font-size:12px; cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.model-dropdown .model-trigger::after { content:"▾"; font-size:10px; opacity:0.6; flex-shrink:0; }
+.model-dropdown .model-list { position:absolute; bottom:100%; left:0; right:0; max-height:240px; overflow-y:auto; background:var(--surface); border:1px solid var(--border); border-radius:8px; box-shadow:0 -4px 12px rgba(0,0,0,0.15); z-index:100; display:none; margin-bottom:4px; }
+.model-dropdown .model-list.open { display:block; }
+.model-dropdown .model-list .model-option { padding:8px 12px; font-size:13px; cursor:pointer; border-bottom:1px solid var(--border); }
+.model-dropdown .model-list .model-option:last-child { border-bottom:none; }
+.model-dropdown .model-list .model-option:hover { background:var(--surface2); }
+.model-dropdown .model-list .model-option.selected { background:var(--accent); color:#fff; }
+/* Swipe back indicator follows the finger; ready state confirms release-to-go-back. */
+.swipe-back-indicator { position:fixed; left:8px; top:50%; min-width:52px; height:44px; display:flex; align-items:center; justify-content:center; padding:0 12px; border-radius:22px; background:rgba(20,20,20,0.82); color:#fff; box-shadow:0 4px 16px rgba(0,0,0,0.25); font-size:13px; font-weight:600; z-index:9999; opacity:0; transform:translate3d(-64px,-50%,0) scale(0.88); transition:opacity 0.16s ease, transform 0.16s ease, background 0.16s ease; pointer-events:none; will-change:transform,opacity; }
+.swipe-back-indicator.swiping { transition:none; }
+.swipe-back-indicator.ready { background:var(--accent); color:var(--on-accent); }
+
+/* ── Scrollbar ─────────────────────────────────────────────────────── */
+/* Mobile-first: a visible, draggable, high-contrast thumb that brightens on
+   touch/hover, plus touch-gesture hints so vertical scrolling is smooth and
+   never rubber-bands through to the page behind. The old 4px border-coloured
+   thumb was nearly invisible on the dark background and too thin to grab on a
+   touchscreen (the "黑黑的 / 不好操作" complaint). */
+/* Hide the native scrollbar on the scroll container — the custom rail below
+   replaces it. On Android the native overlay was both near-invisible (its only
+   bright state was tied to :hover/:active, which a touchscreen never triggers)
+   and non-draggable, so it couldn't be used to page through long threads. */
+.content { overscroll-behavior-y: contain; touch-action: pan-y; scrollbar-width: none; -ms-overflow-style: none; }
+.content::-webkit-scrollbar { width: 0; height: 0; display: none; }
+
+/* ── Custom scrollbar ─────────────────────────────────────────────── */
+/* A real DOM element, NOT a UA scrollbar, so Android Chrome cannot hide or
+   ignore it. Fades in on scroll / content change, fades out after ~0.9s idle.
+   The thumb is draggable (pointer capture) and the rail is click-to-jump — a
+   scrollbar that genuinely works for paging on a phone. Default thumb is a
+   high-contrast translucent white with a dark hairline so it is visible the
+   instant it appears on the dark background (the old 30%-grey was not). */
+.scroll-rail {
+  position: fixed; right: 2px; top: calc(56px + var(--safe-top));
+  bottom: calc(var(--input-area-height, 0px) + 8px);
+  /* Wide enough to host the fat, finger-friendly thumb (21px) plus its inset
+     without clipping, and to give a generous click-to-jump target. The rail
+     itself is transparent + pointer-events:none, so the extra width costs
+     nothing visually and only enlarges the grab/tap zone. */
+  width: 26px; z-index: 45;
+  opacity: 0; transition: opacity 0.28s ease;
+  pointer-events: none;
+}
+.scroll-rail.show { opacity: 1; pointer-events: auto; }
+.scroll-thumb {
+  position: absolute; top: 0; right: 2px;
+  /* ~3x the old 7px thumb (21px) so a small fingertip can actually land on and
+     drag it — the previous hairline was the "can't grab it" complaint. Taller
+     min-height (56px) gives an even bigger vertical grab surface. */
+  width: 21px; min-height: 56px; border-radius: 11px;
+  background: var(--thumb-bg);
+  box-shadow: 0 0 0 1px var(--thumb-shadow);
+  pointer-events: auto; touch-action: none;
+  transition: background-color 0.15s ease, width 0.12s ease;
+  will-change: transform;
+}
+.scroll-thumb:hover { background: rgba(224, 224, 224, 0.82); }
+.scroll-rail.dragging .scroll-thumb,
+.scroll-thumb:active { background: var(--accent); width: 24px; right: 1px; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(224, 224, 224, 0.30);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 0.2s ease;
+}
+::-webkit-scrollbar-thumb:hover,
+::-webkit-scrollbar-thumb:active { background: rgba(79, 195, 247, 0.62); background-clip: padding-box; }
+* { scrollbar-width: thin; scrollbar-color: rgba(224, 224, 224, 0.30) transparent; }
+/* Desktop pointers: slimmer and quieter; touchscreens keep the chunkier,
+   grabbable thumb above. */
+@media (pointer: fine) {
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-thumb { background: rgba(224, 224, 224, 0.22); background-clip: padding-box; }
+  /* A precise mouse pointer needs no fat thumb — slim the custom rail back
+     down on desktop so it stays unobtrusive; the chunky 21px thumb is for
+     touchscreens only. */
+  .scroll-rail { width: 14px; right: 3px; }
+  .scroll-thumb { width: 9px; min-height: 40px; right: 2px; border-radius: 6px; }
+  .scroll-rail.dragging .scroll-thumb, .scroll-thumb:active { width: 11px; }
+}
+</style>
+</head>
+<body>
+
+<div class="header" id="header">
+  <button class="back" id="backBtn" style="display:none" onclick="goBack()">←</button>
+  <span class="title" id="headerTitle">Pi Web</span>
+  <button class="theme-btn" id="themeBtn" onclick="toggleTheme()" title="切换日间/夜间模式">☀️</button>
+  <span class="status" id="headerStatus"></span>
+</div>
+
+<div class="pull-refresh-indicator" id="pullRefreshIndicator">↓ 下拉刷新</div>
+<div class="content" id="content" style="position:relative"></div>
+<div class="scroll-rail" id="scrollRail"><div class="scroll-thumb" id="scrollThumb"></div></div>
+
+<button id="jumpBtn" class="jump-btn" style="display:none" onclick="jumpToBottom()">↓ 新消息</button>
+
+<div id="inputArea" style="display:none">
+  <div class="model-bar" id="modelBar">
+    <div class="model-dropdown" id="modelDropdown">
+      <div class="model-trigger" id="modelTrigger" onclick="toggleModelDropdown()">选择模型</div>
+      <div class="model-list" id="modelList"></div>
+    </div>
+    <span class="ctx" id="ctxInfo"></span>
+  </div>
+  <div class="image-preview-strip" id="imagePreviewStrip"></div>
+  <div class="input-bar">
+    <button class="attach-btn" id="attachBtn" onclick="document.getElementById('imageFileInput').click()" title="添加图片">+</button>
+    <input type="file" id="imageFileInput" accept="image/*" multiple style="display:none" onchange="handleImageFiles(this.files)">
+    <textarea id="msgInput" rows="1" placeholder="输入消息…" oninput="autoResize(this)" onkeydown="onInputKey(event)"></textarea>
+    <button class="send-btn" id="sendBtn" onclick="sendMessage()">↑</button>
+    <button class="abort-btn" id="abortBtn" onclick="abortSession()" style="display:none">■</button>
+  </div>
+</div>
+
+<script>
+// ─── State ───────────────────────────────────────────────────────────
+const PWA_VERSION = "pi-mobile-v51"; // keep in sync with sw.js VERSION
+const API = "/mobile/api/v1";
+const NAV_STATE_KEY = "pi-mobile-nav";
+let currentView = "login"; // login | projects | sessions | chat
+let viewStack = [];
+let navEpoch = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+let browserHistoryReady = false;
+let browserBackPending = false;
+let browserBackTimer = null;
+let browserBackToken = 0;
+let currentProjectId = null;
+let currentSessionId = null;
+let currentMessages = [];
+let messageRevision = 0;
+let modelNames = {}; // provider:model -> display name (built from /models)
+// Explicit model selection from session history ({provider, modelId}). The raw
+// /state model is the *resolved* backend model the router actually used (e.g.
+// gpt-5.6); it must NOT overwrite the user's pi-router/auto pick in the picker.
+let currentModelSelection = null;
+let attachedImages = []; // { data: base64, mimeType, previewUrl }
+let sseSource = null;
+// ── SSE resilience state ────────────────────────────────────────────
+let sseReconnectTimer = null;     // pending backoff reconnect
+let sseReconnectAttempt = 0;      // exponent for backoff
+let sseActivityTimer = null;      // half-open / silent-drop detector
+let lastSSEEventAt = 0;           // timestamp of last EventSource message
+const SSE_ACTIVITY_TIMEOUT = 45000; // no message (incl. ping) for 45s => assume dead
+const SSE_ACTIVITY_CHECK = 15000;
+const SSE_MAX_BACKOFF = 30000;
+let isRunning = false;
+let runningRevision = 0;
+let streamingMsg = null;
+let streamRenderFrame = null;
+let streamRenderTimer = null;
+let lastStreamPaintAt = 0;
+let sseOpenCount = 0;
+let reconnectSyncTimer = null;
+let contextWarmupTimer = null;
+let contextWarmupAttempts = 0;
+let statePollTimer = null;
+let listPollTimer = null;
+let viewLoadId = 0;
+let isSending = false;
+const activeExtensionUiIds = new Set();
+// ── List caches (stale-while-revalidate: paint last list instantly on "back",
+//    refresh in background) so returning from chat never waits on the tunnel. ──
+let projectsCache = null;            // last /projects result array
+const sessionsCache = new Map();     // projectId -> last sessions array
+// ── Archive state (loaded from disk via API, shared with desktop) ──
+let archivedIds = new Set();
+(async () => {
+  try {
+    const r = await fetch(`${API}/archived-sessions`);
+    if (r.ok) { const d = await r.json(); if (d?.ids) archivedIds = new Set(d.ids); }
+  } catch {}
+})();
+const historyCache = new Map();      // recent sessionId -> slim mobile messages
+const HISTORY_CACHE_LIMIT = 4;
+
+function isVisibleMobileMessage(message) {
+  return !(message?.role === "custom" && message?.display === false);
+}
+
+function cacheHistory(sessionId, messages) {
+  if (!sessionId || !Array.isArray(messages)) return;
+  historyCache.delete(sessionId);
+  historyCache.set(sessionId, messages.filter((message) => !message?._optimistic && isVisibleMobileMessage(message)).slice());
+  while (historyCache.size > HISTORY_CACHE_LIMIT) historyCache.delete(historyCache.keys().next().value);
+}
+
+// ─── API helpers ─────────────────────────────────────────────────────
+const REQUEST_TIMEOUT_MS = 30000;
+async function fetchWithDeadline(input, init = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (e) {
+    if (e?.name === "AbortError") throw new Error("请求超时，请检查网络后重试");
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function api(path, opts = {}) {
+  const res = await fetchWithDeadline(`${API}${path}`, {
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", ...opts.headers },
+    ...opts,
+  });
+  if (res.status === 401) { showLogin(); throw new Error("UNAUTHORIZED"); }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error?.message || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+// ─── Navigation ──────────────────────────────────────────────────────
+function runViewTransition(direction) {
+  const content = document.getElementById("content");
+  if (!content) return;
+  content.classList.remove("view-enter-forward", "view-enter-back");
+  void content.offsetWidth;
+  const cls = direction === "back" ? "view-enter-back" : "view-enter-forward";
+  content.classList.add(cls);
+  setTimeout(() => content.classList.remove(cls), 240);
+}
+
+function makeBrowserHistoryState(depth = viewStack.length, guard = false) {
+  return {
+    app: NAV_STATE_KEY,
+    epoch: navEpoch,
+    depth,
+    view: currentView,
+    data: getViewData(),
+    stack: viewStack.map((entry) => ({ view: entry.view, data: entry.data })),
+    guard,
+  };
+}
+
+function resetBrowserNavigationRoot() {
+  navEpoch = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const root = makeBrowserHistoryState(0, true);
+  if (!browserHistoryReady) {
+    history.replaceState({ ...root, guard: false }, "");
+    history.pushState(root, "");
+    browserHistoryReady = true;
+  } else {
+    history.replaceState(root, "");
+  }
+  browserBackPending = false;
+  browserBackToken++;
+  if (browserBackTimer) { clearTimeout(browserBackTimer); browserBackTimer = null; }
+}
+
+function navigate(view, data) {
+  if (browserBackPending) return;
+  if (view === currentView) {
+    if (view === "sessions" && data?.projectId === currentProjectId) return;
+    if (view === "chat" && data?.sessionId === currentSessionId) return;
+  }
+  viewStack.push({ view: currentView, data: getViewData() });
+  currentView = view;
+  renderView(data);
+  if (browserHistoryReady) history.pushState(makeBrowserHistoryState(), "");
+  runViewTransition("forward");
+}
+
+function cleanupLeavingChat() {
+  if (currentView !== "chat") return;
+  closeSSE();
+  viewLoadId++;
+  isRunning = false;
+  streamingMsg = null;
+  lastUserQuestion = "";
+  lastUserQuestionOwner = "";
+}
+
+function applyAppBack(animate = true) {
+  if (viewStack.length === 0) return false;
+  cleanupLeavingChat();
+  const prev = viewStack.pop();
+  currentView = prev.view;
+  renderView(prev.data);
+  if (animate) runViewTransition("back");
+  return true;
+}
+
+function restoreBrowserRoute(state, direction) {
+  if (!state || !Array.isArray(state.stack) || typeof state.view !== "string") return false;
+  const stack = state.stack
+    .filter((entry) => entry && typeof entry.view === "string")
+    .map((entry) => ({ view: entry.view, data: entry.data ?? null }));
+  if (stack.length !== state.depth) return false;
+  if (currentView === "chat" && (state.view !== "chat" || state.data?.sessionId !== currentSessionId)) {
+    cleanupLeavingChat();
+  }
+  viewStack = stack;
+  currentView = state.view;
+  renderView(state.data ?? null);
+  runViewTransition(direction);
+  return true;
+}
+
+// Header button and swipe both use browser history; popstate is the only place
+// that mutates the in-app stack. This keeps all return methods in lockstep.
+function goBack() {
+  if (viewStack.length === 0 || browserBackPending) return;
+  const state = history.state;
+  if (browserHistoryReady && state?.app === NAV_STATE_KEY && state.epoch === navEpoch) {
+    browserBackPending = true;
+    const token = ++browserBackToken;
+    const startDepth = viewStack.length;
+    const startEpoch = navEpoch;
+    history.back();
+    // Extremely defensive fallback for WebViews that drop popstate. The token
+    // prevents an older timer from completing a newer back operation.
+    browserBackTimer = setTimeout(() => {
+      if (!browserBackPending || token !== browserBackToken || startEpoch !== navEpoch || viewStack.length !== startDepth) return;
+      browserBackTimer = null;
+      browserBackPending = false;
+      if (applyAppBack()) history.replaceState(makeBrowserHistoryState(), "");
+    }, 600);
+    return;
+  }
+  if (applyAppBack()) history.replaceState(makeBrowserHistoryState(), "");
+}
+
+function getViewData() {
+  if (currentView === "sessions") return { projectId: currentProjectId };
+  if (currentView === "chat") return { sessionId: currentSessionId };
+  return null;
+}
+
+function renderView(data) {
+  const backBtn = document.getElementById("backBtn");
+  const inputArea = document.getElementById("inputArea");
+  backBtn.style.display = viewStack.length > 0 ? "" : "none";
+  inputArea.style.display = currentView === "chat" ? "" : "none";
+  // The fixed custom scrollbar's bottom edge tracks the input bar; when the bar
+  // is hidden (non-chat views) collapse that reservation so the rail spans the
+  // full list height instead of floating above an empty gap.
+  document.documentElement.style.setProperty(
+    "--input-area-height",
+    currentView === "chat" ? (inputArea.offsetHeight || 112) + "px" : "0px"
+  );
+  if (currentView !== "chat") clearUnseen();
+
+  switch (currentView) {
+    case "login": showLogin(); break;
+    case "projects": showProjects(); break;
+    case "sessions": showSessions(data?.projectId); break;
+    case "chat": showChat(data?.sessionId); break;
+  }
+}
+
+// ─── Login ───────────────────────────────────────────────────────────
+function showLogin() {
+  viewLoadId++;
+  closeSSE();
+  clearListPoll();
+  currentView = "login";
+  viewStack = [];
+  resetBrowserNavigationRoot();
+  document.getElementById("headerTitle").textContent = "Pi Web Mobile";
+  document.getElementById("headerStatus").className = "status";
+  document.getElementById("backBtn").style.display = "none";
+  document.getElementById("inputArea").style.display = "none";
+  clearUnseen();
+  document.getElementById("content").innerHTML = `
+    <div class="login-wrap">
+      <h1>🔗 配对连接</h1>
+      <p>在电脑端托盘菜单查看配对码</p>
+      <input type="text" id="codeInput" maxlength="6" inputmode="numeric" pattern="[0-9]*" placeholder="000000" autocomplete="off">
+      <div class="error" id="loginError"></div>
+      <button onclick="doLogin()">连接</button>
+    </div>`;
+  setTimeout(() => document.getElementById("codeInput")?.focus(), 100);
+}
+
+async function doLogin() {
+  const code = document.getElementById("codeInput")?.value?.trim();
+  const errEl = document.getElementById("loginError");
+  if (!code || code.length !== 6) { errEl.textContent = "请输入6位配对码"; return; }
+  errEl.textContent = "";
+  try {
+    const res = await fetchWithDeadline("/mobile/auth/login", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      errEl.textContent = err.error?.message || "配对失败";
+      return;
+    }
+    currentView = "projects";
+    viewStack = [];
+    resetBrowserNavigationRoot();
+    renderView();
+  } catch (e) {
+    errEl.textContent = e.message;
+  }
+}
+
+// ─── Projects ────────────────────────────────────────────────────────
+function clearListPoll() {
+  if (listPollTimer) {
+    clearTimeout(listPollTimer);
+    listPollTimer = null;
+  }
+}
+
+function scheduleListRefresh() {
+  clearListPoll();
+  listPollTimer = setTimeout(() => {
+    listPollTimer = null;
+    if (document.visibilityState === "hidden") {
+      scheduleListRefresh();
+    } else if (currentView === "projects") {
+      showProjects(true);
+    } else if (currentView === "sessions") {
+      showSessions(currentProjectId, true);
+    }
+  }, 10000);
+}
+
+// Small status tag rendered under list views: version + live theme state, so a
+// stale shell or a theme that "won't stick" is obvious at a glance.
+function themeStateText() {
+  const isLight = document.documentElement.classList.contains("light");
+  let stored = "?";
+  try { stored = localStorage.getItem("piTheme") || "auto"; } catch (e) { stored = "err"; }
+  return `${PWA_VERSION} · ${isLight ? "日间" : "夜间"} · 存储:${stored}`;
+}
+function versionFooter() {
+  return `<div id="verFooter" style="text-align:center;color:var(--text2);font-size:10px;opacity:0.6;padding:14px 0 20px;user-select:none">${themeStateText()}</div>`;
+}
+function refreshVerFooter() {
+  const f = document.getElementById("verFooter");
+  if (f) f.textContent = themeStateText();
+}
+
+function renderProjectsList(projects) {
+  const content = document.getElementById("content");
+  if (!projects?.length) {
+    content.innerHTML = `<div class="empty">暂无项目</div>${versionFooter()}`;
+    return;
+  }
+  const list = document.createElement("div");
+  list.className = "list";
+  for (const p of projects) {
+    const item = document.createElement("div");
+    item.className = "list-item";
+    item.dataset.projectId = p.projectId;
+    item.innerHTML =
+      `<div class="name">${p.hasRunning ? '<span class="dot"></span>' : ''}${esc(p.name)}</div>` +
+      `<div class="meta"><span>${p.sessionCount} 会话</span><span>${timeAgo(p.lastModified)}</span></div>`;
+    item.addEventListener("click", () => navigate("sessions", { projectId: item.dataset.projectId }));
+    list.appendChild(item);
+  }
+  content.innerHTML = "";
+  content.appendChild(list);
+  content.insertAdjacentHTML("beforeend", versionFooter());
+}
+
+async function showProjects(silent = false) {
+  const loadId = ++viewLoadId;
+  clearListPoll();
+  currentView = "projects";
+  document.getElementById("headerTitle").textContent = "项目";
+  const content = document.getElementById("content");
+  const hadCache = !!projectsCache;
+  // Stale-while-revalidate: paint the cached list instantly so "back" from a
+  // chat feels immediate even over a slow tunnel; the fetch below updates it in
+  // place. Only scroll to top when there is nothing cached to show.
+  if (!silent && hadCache) {
+    renderProjectsList(projectsCache);
+    setStatus("loading");
+    content.scrollTop = 0; // Always scroll to top when showing project list
+  } else if (!silent) {
+    setStatus("loading");
+    content.scrollTop = 0;
+    content.innerHTML = `<div class="empty">加载项目…</div>`;
+  }
+  try {
+    const data = await api("/projects");
+    if (loadId !== viewLoadId || currentView !== "projects") return;
+    const nextProjects = data.projects ?? [];
+    const changed = JSON.stringify(nextProjects) !== JSON.stringify(projectsCache);
+    projectsCache = nextProjects;
+    setStatus("ok");
+    if (!hadCache || changed) renderProjectsList(projectsCache);
+  } catch (e) {
+    if (e.message === "UNAUTHORIZED" || loadId !== viewLoadId || currentView !== "projects") return;
+    if (hadCache) {
+      // Keep the cached list on screen; a stale-but-valid list beats an error
+      // page right after the user navigated back. Background poll retries.
+      console.warn("[mobile] projects refresh failed; keeping cache:", e.message);
+    } else if (silent) {
+      console.warn("[mobile] silent projects refresh failed; keeping list:", e.message);
+    } else {
+      setStatus("err");
+      content.innerHTML = `<div class="empty">加载失败: ${esc(e.message)}<br><button onclick="showProjects()" style="margin-top:12px;padding:8px 18px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);cursor:pointer">重试</button></div>`;
+    }
+  } finally {
+    if (loadId === viewLoadId && currentView === "projects") scheduleListRefresh();
+  }
+}
+
+// ─── Sessions ────────────────────────────────────────────────────────
+function renderSessionsList(sessions) {
+  const content = document.getElementById("content");
+  const wrap = document.createElement("div");
+  // New-session button pinned at the top of the list.
+  const newBtn = document.createElement("button");
+  newBtn.className = "new-session-btn";
+  newBtn.id = "newSessionBtn";
+  newBtn.innerHTML = '<span style="font-size:17px;line-height:1">+</span> 新建会话';
+  newBtn.addEventListener("click", createNewSession);
+  wrap.appendChild(newBtn);
+  // Filter out archived sessions
+  const filtered = sessions.filter(s => !archivedIds.has(s.sessionId));
+  if (!filtered?.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "暂无会话";
+    wrap.appendChild(empty);
+  } else {
+    const list = document.createElement("div");
+    list.className = "list";
+    for (const s of filtered) {
+      const item = document.createElement("div");
+      item.className = "list-item";
+      item.dataset.sessionId = s.sessionId;
+      item.innerHTML =
+        `<div class="name">${s.running ? '<span class="dot"></span>' : ''}${esc(s.name || s.sessionId.slice(0, 12))}</div>` +
+        `<div class="meta"><span>${s.messageCount} 条消息</span><span>${timeAgo(s.modified)}</span></div>` +
+        (s.preview ? `<div class="preview">${esc(s.preview)}</div>` : "");
+      item.addEventListener("click", () => navigate("chat", { sessionId: item.dataset.sessionId }));
+      list.appendChild(item);
+    }
+    wrap.appendChild(list);
+  }
+  content.innerHTML = "";
+  content.appendChild(wrap);
+  content.insertAdjacentHTML("beforeend", versionFooter());
+}
+
+async function showSessions(projectId, silent = false) {
+  const loadId = ++viewLoadId;
+  clearListPoll();
+  currentView = "sessions";
+  currentProjectId = projectId;
+  document.getElementById("headerTitle").textContent = projectId ? projectId.split(/[/\\]/).pop() : "会话";
+  const content = document.getElementById("content");
+  const cached = sessionsCache.get(projectId);
+  const hadCache = !!cached;
+  // Stale-while-revalidate: paint the cached list instantly so "back" from a
+  // chat feels immediate; the fetch below updates it in place.
+  if (!silent && hadCache) {
+    renderSessionsList(cached);
+    setStatus("loading");
+    content.scrollTop = 0; // Always scroll to top when showing session list
+  } else if (!silent) {
+    setStatus("loading");
+    content.scrollTop = 0;
+    content.innerHTML = `<div class="empty">加载会话…</div>`;
+  }
+  try {
+    const data = await api(`/projects/${encodeURIComponent(projectId)}/sessions`);
+    if (loadId !== viewLoadId || currentView !== "sessions" || currentProjectId !== projectId) return;
+    const nextSessions = data.sessions ?? [];
+    const changed = JSON.stringify(nextSessions) !== JSON.stringify(cached ?? []);
+    sessionsCache.set(projectId, nextSessions);
+    setStatus("ok");
+    if (!hadCache || changed) renderSessionsList(nextSessions);
+  } catch (e) {
+    if (e.message === "UNAUTHORIZED" || loadId !== viewLoadId || currentView !== "sessions" || currentProjectId !== projectId) return;
+    if (hadCache) {
+      // Keep the cached list on screen; background poll retries.
+      console.warn("[mobile] sessions refresh failed; keeping cache:", e.message);
+    } else if (silent) {
+      console.warn("[mobile] silent sessions refresh failed; keeping list:", e.message);
+    } else {
+      setStatus("err");
+      content.innerHTML = `<div class="empty">加载失败: ${esc(e.message)}<br><button onclick="showSessions(currentProjectId)" style="margin-top:12px;padding:8px 18px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);cursor:pointer">重试</button></div>`;
+    }
+  } finally {
+    if (loadId === viewLoadId && currentView === "sessions" && currentProjectId === projectId) scheduleListRefresh();
+  }
+}
+
+// Create a brand-new session in the current project and open it.
+async function createNewSession() {
+  if (!currentProjectId) return;
+  const projectId = currentProjectId;
+  const loadId = viewLoadId;
+  const btn = document.getElementById("newSessionBtn");
+  if (btn) { btn.disabled = true; btn.textContent = "创建中…"; }
+  try {
+    const data = await api(`/projects/${encodeURIComponent(projectId)}/sessions`, { method: "POST", body: "{}" });
+    sessionsCache.delete(projectId);
+    if (!data?.sessionId) throw new Error("未返回会话 ID");
+    if (currentView === "sessions" && currentProjectId === projectId && viewLoadId === loadId) {
+      navigate("chat", { sessionId: data.sessionId });
+    }
+  } catch (e) {
+    if (e.message !== "UNAUTHORIZED") alert("新建会话失败: " + e.message);
+    if (btn && currentView === "sessions" && currentProjectId === projectId) {
+      btn.disabled = false;
+      btn.innerHTML = '<span style="font-size:17px;line-height:1">+</span> 新建会话';
+    }
+  }
+}
+
+// ─── Chat ────────────────────────────────────────────────────────────
+async function showChat(sessionId) {
+  const loadId = ++viewLoadId;
+  clearListPoll();
+  closeSSE();
+  currentView = "chat";
+  currentSessionId = sessionId;
+  currentMessages = [];
+  messageRevision++;
+  runningRevision++;
+  streamingMsg = null;
+  sseOpenCount = 0;
+  contextWarmupAttempts = 0;
+  // Drop the previous session's anchor text NOW so the content-resize scroll
+  // event that firing innerHTML rewrite triggers cannot repaint it onto this
+  // session's top before history loads (the owner check below is the belt).
+  lastUserQuestion = "";
+  lastUserQuestionOwner = "";
+  document.getElementById("headerTitle").textContent = sessionId?.slice(0, 12) ?? "会话";
+  document.getElementById("inputArea").style.display = "";
+  document.getElementById("ctxInfo").textContent = "上下文 --";
+  setStatus("loading");
+
+  const content = document.getElementById("content");
+  content.innerHTML = `<div id="ctxAnchor" class="ctx-anchor" style="display:none"></div><div class="chat-messages" id="chatMessages"></div>`;
+
+  // Paint a small in-memory LRU immediately, then subscribe before any API
+  // request can block us. A running session can now show its next delta while
+  // history/state/models are still crossing the tunnel.
+  const cachedHistory = historyCache.get(sessionId);
+  if (cachedHistory) {
+    currentMessages = cachedHistory.slice();
+    messageRevision++;
+    renderMessages();
+  }
+  connectSSE(sessionId);
+  if (statePollTimer) clearInterval(statePollTimer);
+  statePollTimer = setInterval(refreshState, 10000);
+  const historyRevision = messageRevision;
+
+  // Observe the message container so any late layout growth (fonts loading, the
+  // first streamed block, a tall code block settling) keeps us pinned to the
+  // bottom while the user hasn't scrolled up. This is the core fix for "opens
+  // mid-thread": the initial scroll-to-bottom can race layout, but the observer
+  // fires once the real height is known and re-pins us. (ResizeObserver on an
+  // element also fires once on observe, giving an extra initial pin.)
+  const _chatEl = document.getElementById("chatMessages");
+  if (_chatEl && "ResizeObserver" in window) {
+    chatResizeObs = new ResizeObserver(() => {
+      if (currentView === "chat" && (stickToBottom || Date.now() < scrollGraceUntil)) {
+        const c = document.getElementById("content");
+        if (c) c.scrollTop = c.scrollHeight;
+      }
+      scheduleScrollUI(false);
+    });
+    chatResizeObs.observe(_chatEl);
+  }
+
+  // Kick off state + models NOW so they race history across the network instead
+  // of waiting in line behind it — on weak mobile links that serial wait was a
+  // big part of "switching sessions feels slow". A 401 still redirects to login
+  // because api() calls showLogin() *before* throwing, so swallowing the throw
+  // here (=> null) is safe; the null is simply skipped below.
+  const sidEnc = encodeURIComponent(sessionId);
+  const initialStateRevision = runningRevision;
+  const stateP = api(`/sessions/${sidEnc}/state`).catch(() => null);
+  const modelsP = api(`/sessions/${sidEnc}/models`).catch(() => null);
+  // Reset the explicit selection for this view; history repopulates it below.
+  currentModelSelection = null;
+
+  // Load history
+  try {
+    const hist = await api(`/sessions/${encodeURIComponent(sessionId)}/history`);
+    if (loadId !== viewLoadId || currentView !== "chat" || currentSessionId !== sessionId) return;
+    // context.model (from buildSessionContext) keeps an explicit pi-router/auto
+    // selection instead of the resolved backend model — the source of truth for
+    // the picker, mirroring the desktop.
+    currentModelSelection = hist.model ?? null;
+    const nextMessages = (hist.messages ?? []).filter(isVisibleMobileMessage);
+    // A final SSE message received while history was in flight is newer than
+    // this snapshot; never replace it with the older response.
+    if (messageRevision === historyRevision) {
+      currentMessages = nextMessages;
+      cacheHistory(sessionId, nextMessages);
+      messageRevision++;
+      renderMessages();
+      if (streamingMsg) scheduleStreamRender(true);
+    }
+  } catch (e) {
+    if (e.message === "UNAUTHORIZED") return;
+    // If the user already navigated away (goBack / opened another session) while
+    // this history request was in flight, its failure must NOT overwrite the
+    // view they are now looking at. This missing guard was the real cause of the
+    // "加载历史失败" flash when returning from a streaming chat: the deferred-
+    // thinking history read contends with the live session write and fails more
+    // often mid-stream, and the unguarded catch then painted the error onto the
+    // project/session list the user had just returned to.
+    if (loadId !== viewLoadId || currentView !== "chat" || currentSessionId !== sessionId) return;
+    if (!cachedHistory && !streamingMsg && currentMessages.length === 0) {
+      content.innerHTML = `<div class="empty">加载历史失败: ${esc(e.message)}<br><button onclick="showChat('${sessionId}')" style="margin-top:12px;padding:8px 18px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);cursor:pointer">重试</button></div>`;
+      return;
+    }
+    setStatus("loading");
+  }
+
+  // Await the state/models we already fired above (non-fatal UI fillers; the
+  // model dropdown + context % can populate a beat after the conversation shows).
+  const [state, models] = await Promise.all([stateP, modelsP]);
+  if (loadId !== viewLoadId || currentView !== "chat" || currentSessionId !== sessionId) return;
+  if (state) {
+    if (initialStateRevision === runningRevision) {
+      isRunning = state.running;
+      updateRunningUI();
+      if (isRunning && !streamingMsg) {
+        streamingMsg = { role: "assistant", content: [] };
+        scheduleStreamRender(true);
+      } else if (!isRunning && streamingMsg) {
+        removeStreamingMessage();
+      }
+    }
+    updateContextInfo(state);
+  }
+  if (models) populateModelSelect(models, state);
+
+  if (loadId !== viewLoadId || currentView !== "chat" || currentSessionId !== sessionId) return;
+
+  setStatus("ok");
+  stickToBottom = true; scrollGraceUntil = Date.now() + 800; clearUnseen();
+  refreshLastUserQuestion(); updateContextAnchor(); scrollToBottom(true);
+}
+
+function renderMessages() {
+  const container = document.getElementById("chatMessages");
+  if (!container) return;
+  container.innerHTML = currentMessages.map((m) => renderMessage(m)).join("");
+  scheduleScrollUI(false);
+  refreshLastUserQuestion();
+  updateContextAnchor();
+}
+
+function modelLabelHtml(msg) {
+  const m = msg?.model;
+  if (!m) return "";
+  const name = modelNames[`${msg.provider}:${m}`] ?? modelNames[m] ?? m;
+  return `<div class="msg-model">${esc(name)}</div>`;
+}
+
+function renderMessage(msg) {
+  if (!isVisibleMobileMessage(msg)) return "";
+  const role = msg.role;
+  if (role === "user") {
+    let html = "";
+    for (const block of (msg.content ?? [])) {
+      if (block.type === "text" && block.text) {
+        html += esc(block.text);
+      } else if (block.type === "image") {
+        const data = block.data ?? block.source?.data ?? "";
+        const mimeType = block.mimeType ?? block.source?.media_type ?? "image/png";
+        if (data) {
+          const src = `data:${mimeType};base64,${data}`;
+          html += `<div class="msg-image"><img src="${src}" alt="image" data-fullsrc="${src}" onclick="showFullScreenImage(this.dataset.fullsrc)" loading="lazy"></div>`;
+        }
+      }
+    }
+    if (!html) html = esc(extractText(msg.content));
+    return `<div class="msg user">${html}</div>`;
+  }
+  if (role === "assistant") {
+    let html = "";
+    for (const block of (msg.content ?? [])) {
+      if (block.type === "thinking") {
+        const thinking = block.thinking ?? block.text ?? "";
+        if (thinking.trim()) {
+          // Collapsible thinking block; the BFF already bounds hidden content.
+          html += `<div class="collapsible">` +
+            `<div class="collapsible-header" onclick="toggleCollapsible(this)">` +
+            `<span class="chevron">▶</span> <span>💭 思考</span> <span class="badge">${thinking.length}字</span></div>` +
+            `<div class="collapsible-body">${esc(thinking)}</div></div>`;
+        }
+      } else if (block.type === "text" && block.text) {
+        html += esc(block.text);
+      } else if (block.type === "toolCall") {
+        const name = block.name ?? block.toolName ?? "tool";
+        const args = block.arguments ?? block.input ?? {};
+        const argsStr = JSON.stringify(args);
+        const preview = getToolPreview(args);
+        html += `<div class="collapsible">` +
+          `<div class="collapsible-header" onclick="toggleCollapsible(this)">` +
+          `<span class="chevron">▶</span> <span class="tc-name" style="color:var(--accent)">${esc(name)}</span> <span class="badge">${esc(preview)}</span></div>` +
+          `<div class="collapsible-body">${esc(argsStr)}</div></div>`;
+      } else if (block.type === "tool_result_image" || block.type === "image") {
+        const data = block.data ?? "";
+        const mediaType = block.mediaType ?? block.mimeType ?? "image/png";
+        if (data) {
+          const src = `data:${mediaType};base64,${data}`;
+          html += `<div class="msg-image"><img src="${src}" alt="image" data-fullsrc="${src}" onclick="showFullScreenImage(this.dataset.fullsrc)" loading="lazy"></div>`;
+        }
+      }
+    }
+    return `<div class="msg assistant">${modelLabelHtml(msg)}${html || "<em>(empty)</em>"}</div>`;
+  }
+  if (role === "toolResult") {
+    const toolName = msg.toolName ?? "";
+    const isError = msg.isError;
+    // Render content blocks: images inline, text in collapsible
+    let imageHtml = "";
+    let textParts = [];
+    for (const block of (msg.content ?? [])) {
+      if (block.type === "image" || block.type === "tool_result_image") {
+        const data = block.data ?? "";
+        const mediaType = block.mediaType ?? block.mimeType ?? "image/png";
+        if (data) {
+          const src = `data:${mediaType};base64,${data}`;
+          imageHtml += `<div class="msg-image"><img src="${src}" alt="image" data-fullsrc="${src}" onclick="showFullScreenImage(this.dataset.fullsrc)" loading="lazy"></div>`;
+        }
+      } else if (block.type === "text" && block.text) {
+        textParts.push(block.text);
+      }
+    }
+    const text = textParts.join("\n");
+    const hasImage = imageHtml !== "";
+    // When the result contains an image, show the preview ABOVE the collapsed
+    // text block so it is always visible without expanding.
+    const firstLine = text.split('\n')[0].slice(0, 80) || "(无输出)";
+    const preview = (toolName ? `[${toolName}] ` : "") + firstLine + (text.length > 80 ? "…" : "");
+    const statusIcon = isError ? "❌" : "✅";
+    // For image-bearing results, render the image unfolded first, then the
+    // text summary in a collapsed block (if any text exists).
+    if (hasImage) {
+      const header = (toolName || text)
+        ? `<div class="collapsible" style="margin:0;">` +
+          `<div class="collapsible-header" onclick="toggleCollapsible(this)" style="${isError ? 'border-left:2px solid var(--danger)' : ''}">` +
+          `<span class="chevron">▶</span> <span>${statusIcon}</span> <span class="badge" style="flex:1;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(preview)}</span></div>` +
+          `<div class="collapsible-body" style="max-height:300px;">${text ? `<pre style="margin:0;white-space:pre-wrap;word-break:break-all;">${esc(text.slice(0, 2000))}</pre>${text.length > 2000 ? "\n…(截断)" : ""}` : ""}</div></div>`
+        : "";
+      return `<div class="msg tool" style="padding:0;border:none;background:none;">${imageHtml}${header}</div>`;
+    }
+    return `<div class="msg tool" style="padding:0;border:none;background:none;">` +
+      `<div class="collapsible" style="margin:0;">` +
+      `<div class="collapsible-header" onclick="toggleCollapsible(this)" style="${isError ? 'border-left:2px solid var(--danger)' : ''}">` +
+      `<span class="chevron">▶</span> <span>${statusIcon}</span> <span class="badge" style="flex:1;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(preview)}</span></div>` +
+      `<div class="collapsible-body" style="max-height:300px;">${text ? `<pre style="margin:0;white-space:pre-wrap;word-break:break-all;">${esc(text.slice(0, 2000))}</pre>${text.length > 2000 ? "\n…(截断)" : ""}` : ""}</div></div></div>`;
+  }
+  return `<div class="msg system">${esc(extractText(msg.content).slice(0, 200))}</div>`;
+}
+
+function getToolPreview(args) {
+  if (!args || typeof args !== 'object') return '';
+  if (args.command) return String(args.command).slice(0, 40);
+  if (args.path) return String(args.path).slice(0, 40);
+  if (args.file_path) return String(args.file_path).slice(0, 40);
+  if (args.pattern) return String(args.pattern).slice(0, 40);
+  if (args.query) return String(args.query).slice(0, 40);
+  const keys = Object.keys(args);
+  if (keys.length === 0) return '';
+  return String(args[keys[0]]).slice(0, 40);
+}
+
+function toggleCollapsible(header) {
+  const el = header.closest('.collapsible');
+  if (el) el.classList.toggle('expanded');
+}
+
+function extractText(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.filter(b => b.type === "text").map(b => b.text).join("\n");
+}
+
+function mergeStreamBlock(current, incoming) {
+  if (!incoming) return current;
+  if (!current || current.type !== incoming.type) return incoming;
+  if (incoming.type === "text") {
+    return incoming.text?.length >= (current.text?.length ?? 0) ? incoming : current;
+  }
+  if (incoming.type === "thinking") {
+    const oldText = current.thinking ?? current.text ?? "";
+    const newText = incoming.thinking ?? incoming.text ?? "";
+    return newText.length >= oldText.length ? incoming : current;
+  }
+  // Tool-call snapshots contain progressively parsed arguments; the latest
+  // indexed snapshot is authoritative even when other blocks interleave.
+  return incoming;
+}
+
+function updateStreamingMessage(event) {
+  const outer = event.message;
+  const partial = event.assistantMessageEvent?.partial;
+  const incoming = partial?.role === "assistant" ? partial : outer;
+  if (incoming?.role !== "assistant") return;
+  const isNewMessage = event.type === "message_start" || !streamingMsg ||
+    (incoming.timestamp != null && streamingMsg.timestamp != null && incoming.timestamp !== streamingMsg.timestamp);
+  if (isNewMessage) {
+    streamingMsg = { ...incoming, content: [...(incoming.content ?? [])] };
+  } else {
+    const oldBlocks = streamingMsg.content ?? [];
+    const newBlocks = incoming.content ?? [];
+    const merged = [];
+    for (let i = 0; i < Math.max(oldBlocks.length, newBlocks.length); i++) {
+      merged[i] = mergeStreamBlock(oldBlocks[i], newBlocks[i]);
+    }
+    streamingMsg = { ...streamingMsg, ...incoming, content: merged };
+  }
+  // First content paints on the next frame; later bursts are capped at 20fps so
+  // long replies do not rebuild/layout the bubble for every token.
+  scheduleStreamRender(isNewMessage);
+}
+
+function updateStreamingDelta(event) {
+  const deltaEvent = event.assistantMessageEvent;
+  if (!deltaEvent || typeof deltaEvent !== "object") return false;
+  if (!streamingMsg) streamingMsg = { role: "assistant", content: [] };
+  const blocks = [...(streamingMsg.content ?? [])];
+  const index = Number.isInteger(deltaEvent.contentIndex) ? deltaEvent.contentIndex : 0;
+  const current = blocks[index];
+  switch (deltaEvent.type) {
+    case "thinking_start":
+      blocks[index] = { type: "thinking", thinking: "" };
+      break;
+    case "thinking_delta": {
+      const next = String(current?.thinking ?? "") + String(deltaEvent.delta ?? "");
+      blocks[index] = { type: "thinking", thinking: next.slice(-600) };
+      break;
+    }
+    case "text_start":
+      blocks[index] = { type: "text", text: "" };
+      break;
+    case "text_delta":
+      blocks[index] = { type: "text", text: String(current?.text ?? "") + String(deltaEvent.delta ?? "") };
+      break;
+    case "toolcall_start":
+    case "toolcall_end":
+      if (deltaEvent.toolCall) blocks[index] = deltaEvent.toolCall;
+      break;
+    case "thinking_end":
+    case "text_end":
+      break;
+    default:
+      return false;
+  }
+  streamingMsg = { ...streamingMsg, content: blocks };
+  scheduleStreamRender(deltaEvent.type.endsWith("_start"));
+  return true;
+}
+
+function scheduleStreamRender(immediate = false) {
+  if (streamRenderFrame != null || streamRenderTimer != null) return;
+  const elapsed = Date.now() - lastStreamPaintAt;
+  const delay = immediate ? 0 : Math.max(0, 50 - elapsed);
+  const queueFrame = () => {
+    streamRenderTimer = null;
+    streamRenderFrame = requestAnimationFrame(renderStreamingMessage);
+  };
+  if (delay === 0) queueFrame();
+  else streamRenderTimer = setTimeout(queueFrame, delay);
+}
+
+function renderStreamingMessage() {
+  streamRenderFrame = null;
+  lastStreamPaintAt = Date.now();
+  const msg = streamingMsg;
+  const container = document.getElementById("chatMessages");
+  if (!msg || !container) return;
+  let div = container.querySelector(".streaming");
+  if (!div) {
+    div = document.createElement("div");
+    div.className = "msg assistant streaming";
+    container.appendChild(div);
+  }
+  let html = "";
+  let hasVisibleContent = false;
+  const blocks = msg.content ?? [];
+  for (const block of blocks) {
+    if (!block) continue;
+    if (block.type === "thinking") {
+      const thinking = block.thinking ?? block.text ?? "";
+      if (thinking.trim()) {
+        hasVisibleContent = true;
+        // Show tail of thinking (last 300 chars) so user sees "progress"
+        const tail = thinking.length > 300 ? "…" + thinking.slice(-300) : thinking;
+        html += `<div class="streaming-thinking">${esc(tail)}</div>`;
+      } else if (block.deferred || block.redacted) {
+        // Deferred/redacted thinking - show placeholder
+        html += `<div class="streaming-thinking-label">深度思考中</div>`;
+        hasVisibleContent = true;
+      }
+    } else if (block.type === "text" && block.text) {
+      hasVisibleContent = true;
+      html += esc(block.text);
+    } else if (block.type === "toolCall") {
+      hasVisibleContent = true;
+      const name = block.name ?? block.toolName ?? "tool";
+      html += `<div class="tool-call"><span class="tc-name">${esc(name)}</span> …</div>`;
+    }
+  }
+
+  // If no visible content yet, show a "thinking" indicator
+  if (!hasVisibleContent) {
+    html = `<div class="streaming-thinking-label">正在思考</div>`;
+  }
+
+  div.innerHTML = modelLabelHtml(msg) + html + '<span class="streaming-indicator"></span>';
+  scheduleScrollUI(false);
+  scrollToBottom();
+}
+
+function removeStreamingMessage() {
+  if (streamRenderFrame != null) {
+    cancelAnimationFrame(streamRenderFrame);
+    streamRenderFrame = null;
+  }
+  if (streamRenderTimer != null) {
+    clearTimeout(streamRenderTimer);
+    streamRenderTimer = null;
+  }
+  const container = document.getElementById("chatMessages");
+  const el = container?.querySelector(".streaming");
+  if (el) el.remove();
+  streamingMsg = null;
+}
+
+function messageIdentity(msg) {
+  if (!msg) return "";
+  if (msg.timestamp != null) return `${msg.role}:${msg.timestamp}`;
+  return `${msg.role}:${JSON.stringify(msg.content ?? "")}`;
+}
+
+function historyTailKey(messages) {
+  const last = messages?.[messages.length - 1];
+  return `${messages?.length ?? 0}:${messageIdentity(last)}:${JSON.stringify(last?.content ?? null)}`;
+}
+
+function finalizeMessage(msg) {
+  if (!msg || !isVisibleMobileMessage(msg)) return;
+  const key = messageIdentity(msg);
+  if (msg.role === "user") {
+    // Replace the optimistic bubble with the authoritative event. The desktop
+    // stream emits user message_start/message_end before assistant output.
+    let optimisticIndex = -1;
+    for (let i = currentMessages.length - 1; i >= 0; i--) {
+      if (currentMessages[i]._optimistic) { optimisticIndex = i; break; }
+    }
+    const duplicateIndex = currentMessages.findIndex((m) => !m._optimistic && messageIdentity(m) === key);
+    if (optimisticIndex >= 0) currentMessages[optimisticIndex] = msg;
+    else if (duplicateIndex < 0) currentMessages.push(msg);
+  } else {
+    const last = currentMessages[currentMessages.length - 1];
+    if (last && messageIdentity(last) === key) currentMessages[currentMessages.length - 1] = msg;
+    else currentMessages.push(msg);
+  }
+  messageRevision++;
+  removeStreamingMessage();
+  cacheHistory(currentSessionId, currentMessages);
+  renderMessages();
+  scrollToBottom();
+}
+
+// ─── SSE ────────────────────────────────────────────────────────────
+function connectSSE(sessionId) {
+  resetSSETransport();
+  const source = new EventSource(`/mobile/api/v1/sessions/${encodeURIComponent(sessionId)}/events`, {
+    withCredentials: true,
+  });
+  sseSource = source;
+
+  source.onopen = () => {
+    if (source !== sseSource || sessionId !== currentSessionId || currentView !== "chat") return;
+    // Socket (re)established: reset backoff and start liveness detection.
+    sseOpenCount++;
+    sseReconnectAttempt = 0;
+    if (sseReconnectTimer) { clearTimeout(sseReconnectTimer); sseReconnectTimer = null; }
+    lastSSEEventAt = Date.now();
+    startActivityWatchdog();
+  };
+
+  source.onmessage = (e) => {
+    if (source !== sseSource || sessionId !== currentSessionId || currentView !== "chat") return;
+    lastSSEEventAt = Date.now(); // any frame (incl. ping) proves the path is alive
+    try {
+      const event = JSON.parse(e.data);
+      handleSSEEvent(event);
+    } catch { /* ignore parse errors */ }
+  };
+
+  source.onerror = () => {
+    if (source !== sseSource || sessionId !== currentSessionId || currentView !== "chat") return;
+    stopActivityWatchdog();
+    // EventSource auto-reconnects on transient failures, but it PERMANENTLY
+    // stops (readyState === CLOSED) on 4xx / clean server close. In that case
+    // we reconnect ourselves with backoff — UNLESS we left the chat view. A
+    // 401 (expired cookie / revoked session) is handled by the 10s state poll
+    // which calls showLogin() and flips currentView to "login"; we must not
+    // fight that by reconnecting the dead SSE.
+    if (currentView !== "chat" || !currentSessionId) return;
+    // A dropped/flapping tunnel fires onerror constantly. Showing a hard red dot
+    // on every transient blip made the header flash red even though we recover
+    // seconds later. Show "loading" (we are actively reconnecting) instead; the
+    // red dot is reserved for genuinely terminal errors (see the error event).
+    if (source.readyState === EventSource.CLOSED) {
+      setStatus("loading");
+      scheduleSSEReconnect(sessionId);
+    } else {
+      // readyState CONNECTING/OPEN => native auto-reconnect already in flight.
+      setStatus("loading");
+    }
+  };
+
+}
+
+// Backoff reconnect for the case EventSource gave up (CLOSED). Capped, and a
+// single pending attempt at a time so a flapping link can't stack timers.
+function scheduleSSEReconnect(sessionId) {
+  if (sseReconnectTimer) return;
+  const delay = Math.min(3000 * Math.pow(2, Math.min(sseReconnectAttempt, 4)), SSE_MAX_BACKOFF);
+  sseReconnectAttempt++;
+  sseReconnectTimer = setTimeout(() => {
+    sseReconnectTimer = null;
+    if (currentView === "chat" && currentSessionId === sessionId) connectSSE(sessionId);
+  }, delay);
+}
+
+// Detect a half-open / silently-dropped connection (mobile NATs drop idle TCP
+// mappings without FIN/RST, so onerror never fires). The BFF sends a `ping`
+// data event every 20s; if none arrives for SSE_ACTIVITY_TIMEOUT while the tab
+// is visible and the socket claims OPEN, we force a reconnect.
+function startActivityWatchdog() {
+  stopActivityWatchdog();
+  sseActivityTimer = setInterval(() => {
+    if (currentView !== "chat" || !sseSource) return;
+    if (sseSource.readyState !== EventSource.OPEN) return;
+    if (document.visibilityState !== "visible") return; // background tabs throttle
+    if (lastSSEEventAt && Date.now() - lastSSEEventAt > SSE_ACTIVITY_TIMEOUT) {
+      // Half-open socket: force a reconnect. This is recovery-in-progress, not a
+      // terminal failure, so show "loading" rather than a red dot.
+      setStatus("loading");
+      try { sseSource.close(); } catch { /* ignore */ }
+      sseSource = null;
+      connectSSE(currentSessionId);
+    }
+  }, SSE_ACTIVITY_CHECK);
+}
+function stopActivityWatchdog() {
+  if (sseActivityTimer) { clearInterval(sseActivityTimer); sseActivityTimer = null; }
+}
+
+// After suspend / network handoff the EventSource can be dead without firing
+// onerror. Called on visibilitychange->visible and window online. If the socket
+// isn't actively OPEN we reconnect at once (no backoff); if it claims OPEN we
+// just reset the activity clock and let the watchdog grant one grace period.
+function wakeSSE() {
+  if (currentView !== "chat" || !currentSessionId) return;
+  if (!sseSource || sseSource.readyState !== EventSource.OPEN) {
+    sseReconnectAttempt = 0;
+    connectSSE(currentSessionId);
+  } else {
+    lastSSEEventAt = Date.now();
+  }
+}
+
+function scheduleReconnectSync() {
+  // Both MobileBridge and pi-web emit an unnamed JSON {type:"connected"}
+  // record. Debounce the pair and reconcile snapshots after every reconnect.
+  if (reconnectSyncTimer) clearTimeout(reconnectSyncTimer);
+  reconnectSyncTimer = setTimeout(() => {
+    reconnectSyncTimer = null;
+    if (currentView === "chat") {
+      refreshHistory();
+      refreshState();
+    }
+  }, 100);
+}
+
+function resetSSETransport() {
+  if (sseReconnectTimer) { clearTimeout(sseReconnectTimer); sseReconnectTimer = null; }
+  stopActivityWatchdog();
+  if (reconnectSyncTimer) { clearTimeout(reconnectSyncTimer); reconnectSyncTimer = null; }
+  if (contextWarmupTimer) { clearTimeout(contextWarmupTimer); contextWarmupTimer = null; }
+  if (sseSource) {
+    try { sseSource.close(); } catch {}
+    sseSource = null;
+  }
+}
+
+function closeSSE() {
+  resetSSETransport();
+  if (chatResizeObs) { chatResizeObs.disconnect(); chatResizeObs = null; }
+  // Cancel a pending streaming paint so it can't fire after the chat DOM is
+  // gone (renderStreamingMessage also null-guards, this is the belt).
+  if (streamRenderFrame != null) {
+    cancelAnimationFrame(streamRenderFrame);
+    streamRenderFrame = null;
+  }
+  if (streamRenderTimer != null) {
+    clearTimeout(streamRenderTimer);
+    streamRenderTimer = null;
+  }
+  if (statePollTimer) {
+    clearInterval(statePollTimer);
+    statePollTimer = null;
+  }
+  if (forcedScrollTimer) {
+    clearTimeout(forcedScrollTimer);
+    forcedScrollTimer = null;
+  }
+}
+
+async function respondToExtensionUi(sessionId, request, response, attempt = 0) {
+  try {
+    await api(`/sessions/${encodeURIComponent(sessionId)}/ui-response`, {
+      method: "POST",
+      body: JSON.stringify({ id: request.id, ...response }),
+    });
+    activeExtensionUiIds.delete(request.id);
+  } catch (e) {
+    if (currentView === "chat" && currentSessionId === sessionId && attempt < 2) {
+      setTimeout(() => void respondToExtensionUi(sessionId, request, response, attempt + 1), 300 * Math.pow(2, attempt));
+      return;
+    }
+    activeExtensionUiIds.delete(request.id);
+    if (currentView === "chat" && currentSessionId === sessionId) {
+      alert("确认提交失败，正在重新连接以恢复请求: " + e.message);
+      connectSSE(sessionId);
+    }
+  }
+}
+
+function handleExtensionUiRequest(request) {
+  if (!request?.id || activeExtensionUiIds.has(request.id) || !currentSessionId) return;
+  activeExtensionUiIds.add(request.id);
+  const sessionId = currentSessionId;
+  const title = request.title || "需要确认";
+  if (request.expiresAt && Date.now() >= request.expiresAt) {
+    void respondToExtensionUi(sessionId, request, { cancelled: true });
+    return;
+  }
+  if (request.method === "confirm") {
+    const confirmed = window.confirm([title, request.message || ""].filter(Boolean).join("\n\n"));
+    void respondToExtensionUi(sessionId, request, { confirmed });
+    return;
+  }
+  if (request.method === "select") {
+    const options = Array.isArray(request.options) ? request.options : [];
+    if (options.length === 0) {
+      void respondToExtensionUi(sessionId, request, { cancelled: true });
+      return;
+    }
+    const menu = options.map((option, index) => `${index + 1}. ${option}`).join("\n");
+    while (true) {
+      const answer = window.prompt([title, "请输入选项序号：", menu].filter(Boolean).join("\n\n"));
+      if (answer == null) {
+        void respondToExtensionUi(sessionId, request, { cancelled: true });
+        break;
+      }
+      const index = Number(answer.trim()) - 1;
+      if (Number.isInteger(index) && options[index] != null) {
+        void respondToExtensionUi(sessionId, request, { value: options[index] });
+        break;
+      }
+      alert(`请输入 1-${options.length} 之间的序号。`);
+    }
+    return;
+  }
+  if (request.method === "input" || request.method === "editor") {
+    const value = window.prompt(title, request.prefill || "");
+    void respondToExtensionUi(sessionId, request, value == null ? { cancelled: true } : { value });
+    return;
+  }
+  activeExtensionUiIds.delete(request.id);
+}
+
+function handleSSEEvent(event) {
+  // Total gate: once we've left the chat view (goBack/closeSSE), stray or
+  // already-queued SSE events must not run chat logic or touch chat DOM.
+  if (currentView !== "chat") return;
+  switch (event.type) {
+    case "connected":
+      setStatus("ok");
+      // The first state fetch can beat pi-web's SSE session startup and contain
+      // no contextUsage. Retry briefly after connected frames until it appears.
+      scheduleContextWarmup(250);
+      // The BFF and pi-web each emit a connected frame. Reconcile only after a
+      // real socket re-open, not twice during the initial history load.
+      if (sseOpenCount > 1) scheduleReconnectSync();
+      break;
+    case "agent_start":
+      runningRevision++;
+      isRunning = true;
+      updateRunningUI();
+      if (!streamingMsg) {
+        streamingMsg = { role: "assistant", content: [] };
+        scheduleStreamRender(true);
+      }
+      break;
+    case "message_start":
+      if (event.message?.role === "assistant") updateStreamingMessage(event);
+      break;
+    case "message_update":
+      // New mobile protocol carries only SDK deltas. Keep the snapshot fallback
+      // for a rolling upgrade where an older BFF is still connected briefly.
+      if (!updateStreamingDelta(event) && event.message?.role === "assistant") updateStreamingMessage(event);
+      break;
+    case "message_end":
+      // One agent run may contain several assistant messages separated by tool
+      // calls. Finalize every message here; waiting for agent_end made each prior
+      // segment disappear when the next streamed message replaced it.
+      if (event.message) finalizeMessage(event.message);
+      break;
+    case "agent_end":
+      runningRevision++;
+      isRunning = false;
+      updateRunningUI();
+      removeStreamingMessage();
+      // Alert the user that the reply finished (vibrate + chime).
+      notifyDone();
+      // A desktop-originated prompt reaches mobile through history rather than
+      // an optimistic local bubble. Reconcile it once, then retry once only if
+      // the reconciliation was not applied (network error or revision guard).
+      // Capture both identity guards so an old timer can never update a newly
+      // opened session.
+      const anchorSessionId = currentSessionId;
+      const anchorLoadId = viewLoadId;
+      refreshHistory().then((applied) => {
+        if (currentView !== "chat" || currentSessionId !== anchorSessionId || viewLoadId !== anchorLoadId) return;
+        refreshLastUserQuestion();
+        updateContextAnchor();
+        if (!applied) {
+          setTimeout(() => {
+            if (currentView !== "chat" || currentSessionId !== anchorSessionId || viewLoadId !== anchorLoadId) return;
+            refreshHistory().then((retryApplied) => {
+              if (!retryApplied || currentView !== "chat" || currentSessionId !== anchorSessionId || viewLoadId !== anchorLoadId) return;
+              refreshLastUserQuestion();
+              updateContextAnchor();
+            });
+          }, 500);
+        }
+      });
+      // Refresh state for context usage
+      refreshState();
+      break;
+    case "model_select":
+      refreshState();
+      break;
+    case "thinking_level_select":
+      refreshState();
+      break;
+    case "extension_ui_request":
+      handleExtensionUiRequest(event);
+      break;
+    case "stream_end":
+      // Upstream (pi-web) closed its event stream; the BFF now drops our socket
+      // and onerror will reconnect us. Transient — show "loading", not a red dot.
+      setStatus("loading");
+      break;
+    case "error":
+      console.error("[SSE]", event.message);
+      if (event.code === "UNAUTHORIZED") {
+        showLogin();
+        break;
+      }
+      if (event.terminal) {
+        // Genuinely unrecoverable (e.g. 404 session gone) — this is the only
+        // case that earns a hard red dot.
+        closeSSE();
+        setStatus("err");
+      } else {
+        setStatus("loading");
+      }
+      break;
+  }
+}
+
+async function refreshHistory() {
+  if (!currentSessionId) return false;
+  const sessionId = currentSessionId;
+  const loadId = viewLoadId;
+  const revision = messageRevision;
+  try {
+    const hist = await api(`/sessions/${encodeURIComponent(sessionId)}/history`);
+    if (loadId !== viewLoadId || currentView !== "chat" || currentSessionId !== sessionId || revision !== messageRevision) return false;
+    if (hist.model) currentModelSelection = hist.model;
+    const nextMessages = (hist.messages ?? []).filter(isVisibleMobileMessage);
+    const hasNewContent = historyTailKey(nextMessages) !== historyTailKey(currentMessages);
+    currentMessages = nextMessages;
+    cacheHistory(sessionId, nextMessages);
+    messageRevision++;
+    renderMessages();
+    // Re-sync the picker: the explicit selection may have changed upstream
+    // (e.g. a model switch recorded as a model_change entry).
+    syncModelSelect();
+    // Snapshot reconciliation must not erase a currently unpersisted stream.
+    if (streamingMsg) {
+      if (streamRenderFrame == null) streamRenderFrame = requestAnimationFrame(renderStreamingMessage);
+    }
+    scrollToBottom(false, hasNewContent);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function scheduleContextWarmup(delay = 250) {
+  if (contextWarmupTimer) clearTimeout(contextWarmupTimer);
+  const sessionId = currentSessionId;
+  contextWarmupTimer = setTimeout(async () => {
+    contextWarmupTimer = null;
+    if (!sessionId || currentView !== "chat" || currentSessionId !== sessionId) return;
+    const state = await refreshState();
+    const rawPercent = state?.contextUsage?.percent;
+    const hasPercent = rawPercent != null && Number.isFinite(Number(rawPercent));
+    if (!hasPercent && currentView === "chat" && currentSessionId === sessionId && contextWarmupAttempts < 3) {
+      contextWarmupAttempts++;
+      scheduleContextWarmup(400 * contextWarmupAttempts);
+    }
+  }, delay);
+}
+
+async function refreshState() {
+  if (!currentSessionId) return null;
+  const sessionId = currentSessionId;
+  const loadId = viewLoadId;
+  const revision = runningRevision;
+  try {
+    const state = await api(`/sessions/${encodeURIComponent(sessionId)}/state`);
+    if (loadId !== viewLoadId || currentView !== "chat" || currentSessionId !== sessionId) return null;
+    // Do not let a state request started before a newer SSE transition overwrite
+    // the real-time running state. A subsequent poll will reconcile normally.
+    if (revision === runningRevision) {
+      isRunning = state.running;
+      updateRunningUI();
+      if (isRunning && !streamingMsg) {
+        streamingMsg = { role: "assistant", content: [] };
+        scheduleStreamRender(true);
+      } else if (!isRunning && streamingMsg) {
+        removeStreamingMessage();
+      }
+    }
+    updateContextInfo(state);
+    syncModelSelect(state);
+    return state;
+  } catch { return null; }
+}
+
+// ─── Send / Abort ────────────────────────────────────────────────────
+function setSending(v) {
+  isSending = v;
+  const sendBtn = document.getElementById("sendBtn");
+  if (sendBtn) {
+    sendBtn.disabled = v;
+    sendBtn.textContent = v ? "…" : "↑";
+  }
+}
+
+// ─── Image attachment handling ───────────────────────────────────────────────
+function handleImageFiles(files) {
+  if (!files || !files.length) return;
+  const imageFiles = Array.from(files).filter(f => f.type.startsWith("image/"));
+  if (!imageFiles.length) return;
+  // Limit to 5 images max
+  const remaining = 5 - attachedImages.length;
+  const toProcess = imageFiles.slice(0, Math.max(0, remaining));
+  if (toProcess.length < imageFiles.length) {
+    alert(`最多支持 5 张图片，已忽略 ${imageFiles.length - toProcess.length} 张`);
+  }
+  toProcess.forEach(file => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result;
+      const base64 = dataUrl.split(",")[1];
+      const mimeType = file.type;
+      attachedImages.push({ data: base64, mimeType, previewUrl: dataUrl });
+      renderImagePreviewStrip();
+    };
+    reader.readAsDataURL(file);
+  });
+  // Reset file input so same file can be selected again
+  document.getElementById("imageFileInput").value = "";
+}
+
+function removeAttachedImage(index) {
+  attachedImages.splice(index, 1);
+  renderImagePreviewStrip();
+}
+
+function renderImagePreviewStrip() {
+  const strip = document.getElementById("imagePreviewStrip");
+  if (!strip) return;
+  const attachBtn = document.getElementById("attachBtn");
+  if (attachBtn) {
+    attachBtn.classList.toggle("has-image", attachedImages.length > 0);
+  }
+  strip.innerHTML = attachedImages.map((img, i) =>
+    `<div class="img-thumb">` +
+    `<img src="${img.previewUrl}" alt="">` +
+    `<button class="remove-img" onclick="removeAttachedImage(${i})">✕</button>` +
+    `</div>`
+  ).join("");
+}
+
+function showFullScreenImage(src) {
+  const overlay = document.createElement("div");
+  overlay.className = "image-viewer-overlay";
+  overlay.onclick = () => overlay.remove();
+  overlay.innerHTML = `<img src="${src}" alt="">`;
+  document.body.appendChild(overlay);
+}
+
+async function sendMessage() {
+  const input = document.getElementById("msgInput");
+  const text = input?.value?.trim();
+  if ((!text && !attachedImages.length) || !currentSessionId || isSending) return;
+  const sessionId = currentSessionId;
+  const loadId = viewLoadId;
+  const imagesToSend = [...attachedImages];
+  input.value = "";
+  attachedImages = [];
+  renderImagePreviewStrip();
+  autoResize(input);
+  // Optimistic update: show the user's message immediately so the phone gives
+  // instant feedback instead of waiting for the SSE round-trip.
+  const optimisticContent = [];
+  if (text) optimisticContent.push({ type: "text", text });
+  for (const img of imagesToSend) {
+    optimisticContent.push({ type: "image", data: img.data, mimeType: img.mimeType });
+  }
+  const optimisticMessage = { role: "user", content: optimisticContent, _optimistic: true };
+  currentMessages.push(optimisticMessage);
+  messageRevision++;
+  renderMessages();
+  stickToBottom = true; clearUnseen(); scrollToBottom(true);
+  setSending(true);
+  try {
+    await api(`/sessions/${encodeURIComponent(sessionId)}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        message: text || "",
+        ...(imagesToSend.length ? { images: imagesToSend.map(img => ({ type: "image", data: img.data, mimeType: img.mimeType })) } : {})
+      }),
+    });
+    // Sent OK: refresh state so the send/stop button updates promptly.
+    refreshState();
+  } catch (e) {
+    alert("发送失败: " + e.message);
+    // Remove our exact local placeholder immediately. A network refresh is only
+    // a best-effort reconciliation and must not be required for rollback.
+    if (currentView === "chat" && currentSessionId === sessionId && viewLoadId === loadId) {
+      currentMessages = currentMessages.filter((message) => message !== optimisticMessage);
+      messageRevision++;
+      cacheHistory(sessionId, currentMessages);
+      renderMessages();
+      refreshHistory();
+    }
+  } finally {
+    setSending(false);
+  }
+}
+
+async function abortSession() {
+  if (!currentSessionId) return;
+  const abortBtn = document.getElementById("abortBtn");
+  if (abortBtn) { abortBtn.disabled = true; abortBtn.textContent = "…"; }
+  try {
+    await api(`/sessions/${encodeURIComponent(currentSessionId)}/abort`, { method: "POST", body: "{}" });
+    refreshState();
+  } catch (e) {
+    console.error("abort failed:", e);
+  } finally {
+    if (abortBtn) { abortBtn.disabled = false; abortBtn.textContent = "■"; }
+  }
+}
+
+function onInputKey(e) {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+}
+
+function autoResize(el) {
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight, 120) + "px";
+}
+
+// ─── Model selector ──────────────────────────────────────────────────
+// History (buildSessionContext) yields {provider, modelId}; the raw /state RPC
+// yields {provider, id}. Normalise either into {provider, modelId}.
+function modelRefOf(m) {
+  if (!m) return null;
+  const id = m.modelId ?? m.id;
+  return (m.provider && id) ? { provider: m.provider, modelId: id } : null;
+}
+
+function syncModelSelect(state) {
+  const trigger = document.getElementById("modelTrigger");
+  const list = document.getElementById("modelList");
+  if (!trigger || !list) return;
+  // Prefer the explicit selection (from history / an optimistic pin). The /state
+  // model is the *resolved* backend model the router used (e.g. gpt-5.6); it must
+  // never replace the user's pi-router/auto pick in the picker. Fall back to it
+  // only before history has loaded.
+  const ref = modelRefOf(currentModelSelection) ?? modelRefOf(state?.state?.model ?? state?.model);
+  if (!ref) return;
+  const options = list.querySelectorAll(".model-option");
+  options.forEach(opt => {
+    opt.classList.remove("selected");
+    if (opt.dataset.provider === ref.provider && opt.dataset.modelId === ref.modelId) {
+      opt.classList.add("selected");
+      trigger.textContent = opt.textContent;
+    }
+  });
+}
+
+function populateModelSelect(modelsData, state) {
+  const list = document.getElementById("modelList");
+  const trigger = document.getElementById("modelTrigger");
+  if (!list || !trigger) return;
+  list.innerHTML = "";
+  modelNames = {};
+  for (const m of (modelsData.models ?? [])) {
+    const name = m.name || m.id;
+    if (m.provider && m.id) modelNames[`${m.provider}:${m.id}`] = name;
+    if (m.id) modelNames[m.id] = name;
+    const opt = document.createElement("div");
+    opt.className = "model-option";
+    opt.dataset.provider = m.provider;
+    opt.dataset.modelId = m.id;
+    opt.textContent = m.name || m.id;
+    opt.onclick = () => selectModel(m.provider, m.id, opt);
+    list.appendChild(opt);
+  }
+  syncModelSelect(state);
+  // Models arrive after history (history is awaited first). Re-render so
+  // already-painted assistant bubbles show the friendly model name instead
+  // of the raw id. Skip while streaming to avoid wiping the streaming bubble.
+  if (!streamingMsg && currentMessages.length) renderMessages();
+}
+
+function toggleModelDropdown() {
+  const list = document.getElementById("modelList");
+  if (list) list.classList.toggle("open");
+}
+
+function closeModelDropdown() {
+  const list = document.getElementById("modelList");
+  if (list) list.classList.remove("open");
+}
+
+async function selectModel(provider, modelId, optionEl) {
+  if (!currentSessionId) return;
+  closeModelDropdown();
+  if (!provider || !modelId) {
+    console.warn("[mobile] model select: missing provider or modelId", { provider, modelId });
+    alert("模型信息不完整，请重试");
+    return;
+  }
+  const trigger = document.getElementById("modelTrigger");
+  const priorText = trigger?.textContent || "";
+  const priorSelection = currentModelSelection;
+  // Pin the picker to the user's explicit choice so the next /state poll (which
+  // reports the router's *resolved* backend model) cannot flip the trigger to a
+  // different model before history confirms the new selection.
+  currentModelSelection = { provider, modelId };
+  if (trigger) trigger.textContent = optionEl.textContent;
+  try {
+    console.log("[mobile] switching model:", { provider, modelId });
+    await api(`/sessions/${encodeURIComponent(currentSessionId)}/model`, {
+      method: "POST",
+      body: JSON.stringify({ provider, modelId }),
+    });
+    await refreshState();
+  } catch (e) {
+    currentModelSelection = priorSelection;
+    if (trigger) trigger.textContent = priorText;
+    const errorMsg = e.message || "未知错误";
+    console.error("[mobile] model switch failed:", { provider, modelId, error: errorMsg, stack: e.stack });
+    alert(`模型切换失败: ${errorMsg}\n\n模型: ${provider}/${modelId}`);
+  }
+}
+
+// Close dropdown when tapping outside
+document.addEventListener("click", (e) => {
+  const dropdown = document.getElementById("modelDropdown");
+  if (dropdown && !dropdown.contains(e.target)) {
+    closeModelDropdown();
+  }
+});
+
+// ─── UI helpers ──────────────────────────────────────────────────────
+function updateRunningUI() {
+  const sendBtn = document.getElementById("sendBtn");
+  const abortBtn = document.getElementById("abortBtn");
+  if (sendBtn) sendBtn.style.display = isRunning ? "none" : "";
+  if (abortBtn) abortBtn.style.display = isRunning ? "" : "none";
+}
+
+function updateContextInfo(state) {
+  const el = document.getElementById("ctxInfo");
+  if (!el) return;
+  const cu = state?.contextUsage ?? state?.state?.contextUsage;
+  const percent = cu?.percent == null ? NaN : Number(cu.percent);
+  if (Number.isFinite(percent)) {
+    el.textContent = `上下文 ${Math.round(percent)}%`;
+    el.title = cu?.contextWindow ? `${cu.tokens ?? "?"} / ${cu.contextWindow} tokens` : "";
+  } else {
+    el.textContent = "上下文 --";
+    el.title = "上下文统计正在加载";
+  }
+}
+
+function setStatus(s) {
+  const el = document.getElementById("headerStatus");
+  if (el) el.className = `status ${s}`;
+}
+
+// ─── Theme (day/night) ───────────────────────────────────────
+function applyTheme(theme) {
+  const root = document.documentElement;
+  if (theme === "light") root.classList.add("light");
+  else root.classList.remove("light");
+  const btn = document.getElementById("themeBtn");
+  if (btn) btn.textContent = theme === "light" ? "🌙" : "☀️";
+  const meta = document.getElementById("themeColorMeta");
+  if (meta) meta.setAttribute("content", theme === "light" ? "#f5f5f5" : "#1a1a1a");
+  refreshVerFooter();
+}
+let _themeTapLock = 0;
+function toggleTheme() {
+  // Guard against a rapid double-tap firing the toggle twice (light->dark in
+  // quick succession reads as a "white flash then revert" on touch screens).
+  const now = Date.now();
+  if (now - _themeTapLock < 350) return;
+  _themeTapLock = now;
+  const next = document.documentElement.classList.contains("light") ? "dark" : "light";
+  try { localStorage.setItem("piTheme", next); } catch {}
+  applyTheme(next);
+}
+(function initTheme() {
+  let saved = "light";
+  try { saved = localStorage.getItem("piTheme") || (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"); } catch {}
+  applyTheme(saved);
+})();
+
+// ─── Completion notify (vibrate + chime) ────────────────────────────
+let _audioCtx = null;
+function notifyDone() {
+  // Vibrate (Android; iOS Safari ignores unless user-gesture primed — harmless).
+  try { if (navigator.vibrate) navigator.vibrate([60, 40, 60]); } catch {}
+  // Short two-note chime via WebAudio (no asset needed).
+  try {
+    _audioCtx = _audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = _audioCtx;
+    if (ctx.state === "suspended") ctx.resume().catch(() => {});
+    const now = ctx.currentTime;
+    [[880, 0, 0.12], [1320, 0.13, 0.18]].forEach(([freq, off, dur]) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, now + off);
+      gain.gain.exponentialRampToValueAtTime(0.18, now + off + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + off + dur);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(now + off);
+      osc.stop(now + off + dur + 0.05);
+    });
+  } catch {}
+}
+
+// ─── Smart auto-scroll ───────────────────────────────────────────────
+// Follow new content only while the user is at (or near) the bottom. If they
+// scroll up to read history we stop yanking them down and instead surface a
+// "↓ 新消息" button; auto-follow resumes the moment they return to the bottom
+// or tap that button.
+let stickToBottom = true;
+let unseenNew = false;
+let lastUserQuestion = "";          // latest user prompt; shown as a sticky anchor when scrolling up
+let lastUserQuestionOwner = "";     // sessionId that lastUserQuestion was derived from (anti-stale guard)
+let scrollGraceUntil = 0;           // epoch ms; while now<this, force stick-to-bottom after entry
+let forcedScrollTimer = null;
+let chatResizeObs = null;           // pins to bottom on late content growth while stickToBottom
+const STICK_THRESHOLD = 90; // px from bottom that still counts as "at bottom"
+
+function isNearBottom() {
+  const c = document.getElementById("content");
+  if (!c) return true;
+  return c.scrollHeight - c.scrollTop - c.clientHeight < STICK_THRESHOLD;
+}
+
+function scrollToBottom(force = false, markNew = true) {
+  const c = document.getElementById("content");
+  if (!c) return;
+  if (!force && !stickToBottom) {
+    if (markNew) markUnseen(); // don't grab the reader; only flag real new content
+    return;
+  }
+  // Robust pin: a single rAF can fire before the long thread's first-screen
+  // layout has settled (fonts / a tall block), reading a too-small scrollHeight
+  // and leaving the view stranded mid-thread. Double rAF + a delayed fallback
+  // for forced scrolls cover the layout jitter; the ResizeObserver below covers
+  // any growth that happens after that.
+  const sessionId = currentSessionId;
+  const loadId = viewLoadId;
+  const pin = () => {
+    if (currentView !== "chat" || currentSessionId !== sessionId || viewLoadId !== loadId) return;
+    c.scrollTop = c.scrollHeight;
+  };
+  if (force) {
+    requestAnimationFrame(() => { pin(); requestAnimationFrame(pin); });
+    if (forcedScrollTimer) clearTimeout(forcedScrollTimer);
+    forcedScrollTimer = setTimeout(() => {
+      forcedScrollTimer = null;
+      if (currentView === "chat" && currentSessionId === sessionId && viewLoadId === loadId) pin();
+    }, 160);
+  } else {
+    requestAnimationFrame(pin);
+  }
+}
+
+function markUnseen() {
+  if (currentView !== "chat") return;
+  unseenNew = true;
+  const b = document.getElementById("jumpBtn");
+  if (b) b.style.display = "";
+}
+
+function clearUnseen() {
+  unseenNew = false;
+  const b = document.getElementById("jumpBtn");
+  if (b) b.style.display = "none";
+}
+
+// ── Custom scrollbar controller ──────────────────────────────────────
+let _railHideT = null;
+let _scrollUiTimer = null;
+function updateScrollThumb() {
+  const c = document.getElementById("content");
+  const rail = document.getElementById("scrollRail");
+  const thumb = document.getElementById("scrollThumb");
+  if (!c || !rail || !thumb) return;
+  const max = c.scrollHeight - c.clientHeight;
+  if (max <= 4) { rail.style.display = "none"; return; } // nothing to scroll
+  rail.style.display = "";
+  const railH = rail.clientHeight;
+  if (railH <= 0) return;
+  const ratio = c.clientHeight / c.scrollHeight;
+  const minThumb = Number.parseFloat(getComputedStyle(thumb).minHeight) || 44;
+  const thumbH = Math.max(minThumb, ratio * railH);
+  const travel = railH - thumbH;
+  const top = travel > 0 ? (c.scrollTop / max) * travel : 0;
+  thumb.style.height = thumbH + "px";
+  thumb.style.transform = "translateY(" + top + "px)";
+}
+function showScrollRail() {
+  const rail = document.getElementById("scrollRail");
+  if (!rail || rail.style.display === "none") return;
+  rail.classList.add("show");
+  if (_railHideT) clearTimeout(_railHideT);
+  _railHideT = setTimeout(() => rail.classList.remove("show"), 900);
+}
+function refreshScrollUI() { updateScrollThumb(); showScrollRail(); }
+function scheduleScrollUI(show = false) {
+  if (_scrollUiTimer) return;
+  _scrollUiTimer = setTimeout(() => {
+    _scrollUiTimer = null;
+    updateScrollThumb();
+    if (show) showScrollRail();
+  }, 100);
+}
+
+function onContentScroll() {
+  // During the post-entry grace window we ignore a transient isNearBottom()=false
+  // caused by layout settling, so a freshly opened thread can't get stuck mid-way
+  // (and so streaming keeps following until the user deliberately scrolls up).
+  stickToBottom = isNearBottom() || Date.now() < scrollGraceUntil;
+  if (stickToBottom) clearUnseen();
+  updateContextAnchor();
+  refreshScrollUI();
+}
+
+function jumpToBottom() {
+  stickToBottom = true;
+  clearUnseen();
+  scrollToBottom(true);
+  updateContextAnchor();
+}
+
+function refreshLastUserQuestion() {
+  let q = "";
+  for (let i = currentMessages.length - 1; i >= 0; i--) {
+    if (currentMessages[i]?.role === "user") { q = extractText(currentMessages[i].content).trim(); break; }
+  }
+  lastUserQuestion = q.length > 200 ? q.slice(0, 200) + "…" : q;
+  // Tag the question with the session it came from so updateContextAnchor can
+  // refuse to show a question that belongs to a different (previous) session.
+  lastUserQuestionOwner = currentSessionId;
+}
+
+// Sticky "what are we discussing" anchor: shows the latest user prompt pinned
+// to the top while the user scrolls UP through history (hidden at the bottom,
+// where the live conversation is already in view). Solves "I scroll back to
+// check something and forget what the current question was".
+function updateContextAnchor() {
+  const el = document.getElementById("ctxAnchor");
+  if (!el) return;
+  // Owner check is the real fix for the cross-session leak: a question computed
+  // from session X's messages must never render while we are viewing session Y,
+  // even for the brief window between navigate() and Y's history rendering.
+  if (currentView !== "chat" || !lastUserQuestion || lastUserQuestionOwner !== currentSessionId) { el.style.display = "none"; return; }
+  const t = "💬 " + lastUserQuestion;
+  if (el.textContent !== t) el.textContent = t;
+  el.style.display = stickToBottom ? "none" : "";
+}
+
+function esc(s) {
+  if (!s) return "";
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+function timeAgo(iso) {
+  if (!iso) return "";
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "刚刚";
+  if (mins < 60) return `${mins}分钟前`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}小时前`;
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return `${days}天前`;
+  return new Date(iso).toLocaleDateString("zh-CN");
+}
+
+// ─── Keyboard / viewport adaptation ────────────────────────────────
+// With `interactive-widget=resizes-content` the layout viewport shrinks when
+// the on-screen keyboard opens, so the flex layout reflows and the input bar
+// sits above the keyboard. These handlers additionally keep the latest message
+// visible while typing.
+// ─── Zoom limit (not lock) ──────────────────────────────────────────
+// Pinch / Ctrl-wheel zoom is bounded DECLARATIVELY by the viewport meta tag
+// (maximum-scale=2.5, user-scalable=yes) on browsers that honour it — that
+// covers Android Chrome and most desktop browsers, which is where the "zoom
+// deforms the layout" report came from. We intentionally do NOT add a runtime
+// CSS-`zoom` compensation layer here: on iOS Safari the `zoom` property has no
+// effect (and iOS ignores maximum-scale by design, but its native pinch-zoom
+// scales the whole viewport without breaking the flexbox layout, so no
+// deformation occurs), and on desktop a CSS-`zoom` clamp would cancel the
+// user's intentional Ctrl+wheel zoom and could fight the dvh/visualViewport
+// math — i.e. cause the very deformation we are avoiding. Native pinch-zoom
+// also cannot shrink below 1x, so "infinite shrink" is impossible, and
+// `text-size-adjust:100%` (see CSS) stops OS font-scaling from reflowing the
+// layout. Net: zoom stays within sane bounds where the platform allows, never
+// deforms, and always returns cleanly to 1x.
+function setupZoomLimit() {
+  // no-op: bounds are enforced via the viewport meta + text-size-adjust.
+  // Kept as a named hook for future platform-specific needs.
+}
+
+function setupViewportHandling() {
+  const vv = window.visualViewport;
+  const inputArea = document.getElementById("inputArea");
+  const syncViewportMetrics = () => {
+    // Android browser chrome and keyboards do not report 100vh/100dvh
+    // consistently. visualViewport.height is the actually visible CSS-pixel
+    // height, so use it as the final layout authority when available.
+    const height = Math.round(vv?.height ?? window.innerHeight);
+    if (height > 0) document.documentElement.style.setProperty("--app-height", `${height}px`);
+    if (inputArea && inputArea.offsetHeight > 0) {
+      document.documentElement.style.setProperty("--input-area-height", `${inputArea.offsetHeight}px`);
+    }
+  };
+  syncViewportMetrics();
+  vv?.addEventListener("resize", () => {
+    syncViewportMetrics();
+    const msgInput = document.getElementById("msgInput");
+    // Respect an intentional upward scroll even when the keyboard resizes the
+    // viewport. Auto-follow continues only if the reader was already at bottom.
+    if (currentView === "chat" && msgInput && document.activeElement === msgInput) {
+      requestAnimationFrame(() => scrollToBottom());
+    }
+  });
+  window.addEventListener("resize", syncViewportMetrics);
+  if (inputArea && "ResizeObserver" in window) {
+    new ResizeObserver(syncViewportMetrics).observe(inputArea);
+  }
+  const msgInput = document.getElementById("msgInput");
+  if (msgInput) {
+    msgInput.addEventListener("focus", () => {
+      // Give the keyboard animation a moment, but never yank a reader who has
+      // intentionally scrolled upward.
+      setTimeout(() => { if (currentView === "chat") scrollToBottom(); }, 300);
+    });
+  }
+}
+
+// ─── Tap outside to dismiss menus / keyboard ────────────────────────
+// Native <select> popovers and the on-screen keyboard stay open on some
+// devices after tapping elsewhere. Blur the focused control when the user
+// taps a non-interactive area so dropdowns collapse and the keyboard hides.
+function setupTapOutside() {
+  document.addEventListener("pointerdown", (e) => {
+    const t = e.target;
+    if (t && t.closest && t.closest("input, textarea, select, button, a, .list-item")) return;
+    const active = document.activeElement;
+    if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.tagName === "SELECT")) {
+      active.blur();
+    }
+  }, { passive: true });
+}
+
+// ─── Wake Lock ──────────────────────────────────────────────────────
+// Keep the screen on for 5 minutes when the app is in the foreground.
+let wakeLock = null;
+let wakeLockTimer = null;
+async function requestWakeLock() {
+  if (!('wakeLock' in navigator)) return;
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+    console.log('[mobile] Wake Lock acquired');
+    wakeLock.addEventListener('release', () => {
+      console.log('[mobile] Wake Lock released');
+    });
+    // Auto-release after 5 minutes
+    if (wakeLockTimer) clearTimeout(wakeLockTimer);
+    wakeLockTimer = setTimeout(() => {
+      releaseWakeLock();
+    }, 5 * 60 * 1000);
+  } catch (err) {
+    console.warn('[mobile] Wake Lock failed:', err);
+  }
+}
+function releaseWakeLock() {
+  if (wakeLockTimer) {
+    clearTimeout(wakeLockTimer);
+    wakeLockTimer = null;
+  }
+  if (wakeLock) {
+    wakeLock.release();
+    wakeLock = null;
+  }
+}
+function setupWakeLock() {
+  // Request wake lock when page becomes visible
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      requestWakeLock();
+    } else {
+      releaseWakeLock();
+    }
+  });
+  // Initial request if already visible
+  if (document.visibilityState === 'visible') {
+    requestWakeLock();
+  }
+}
+
+// ─── Browser Back Intercept ─────────────────────────────────────────
+function setupBrowserBackIntercept() {
+  resetBrowserNavigationRoot();
+  window.addEventListener("popstate", (e) => {
+    browserBackPending = false;
+    browserBackToken++;
+    if (browserBackTimer) { clearTimeout(browserBackTimer); browserBackTimer = null; }
+    const state = e.state;
+    // A previous document or a state from an old auth/root epoch: keep the
+    // current root in place instead of falling through to a blank history page.
+    if (state?.app !== NAV_STATE_KEY || state.epoch !== navEpoch) {
+      history.pushState(makeBrowserHistoryState(viewStack.length, true), "");
+      return;
+    }
+
+    const targetDepth = Math.max(0, Number(state.depth) || 0);
+    const currentDepth = viewStack.length;
+    if (targetDepth < currentDepth) {
+      if (!restoreBrowserRoute(state, "back")) {
+        while (viewStack.length > targetDepth) applyAppBack(viewStack.length - targetDepth === 1);
+      }
+      return;
+    }
+
+    // The duplicate depth-0 entry is the root guard. Re-arm it only at root;
+    // never add guard entries during normal app navigation.
+    if (targetDepth === 0 && currentDepth === 0) {
+      history.pushState(makeBrowserHistoryState(0, true), "");
+      return;
+    }
+
+    // Browser Forward restores the route snapshot saved in that history entry.
+    if (targetDepth > currentDepth) {
+      if (!restoreBrowserRoute(state, "forward")) {
+        history.replaceState(makeBrowserHistoryState(currentDepth), "");
+      }
+    }
+  });
+}
+
+// ─── Swipe Back Gesture ─────────────────────────────────────────────
+function setupSwipeBackGesture() {
+  let startX = 0;
+  let startY = 0;
+  let tracking = false;
+  let horizontal = false;
+  let lastDeltaX = 0;
+  let indicator = null;
+  const EDGE_WIDTH = 72;
+  const TRIGGER_DISTANCE = 76;
+
+  function getIndicator() {
+    if (!indicator) {
+      indicator = document.createElement("div");
+      indicator.className = "swipe-back-indicator";
+      indicator.textContent = "← 返回";
+      document.body.appendChild(indicator);
+    }
+    return indicator;
+  }
+
+  function paint(deltaX) {
+    const el = getIndicator();
+    const progress = Math.max(0, Math.min(deltaX / TRIGGER_DISTANCE, 1));
+    el.classList.add("swiping");
+    el.classList.toggle("ready", progress >= 1);
+    el.textContent = progress >= 1 ? "松开返回" : "← 返回";
+    el.style.opacity = String(0.2 + progress * 0.8);
+    el.style.transform = `translate3d(${-64 + progress * 72}px,-50%,0) scale(${0.88 + progress * 0.12})`;
+  }
+
+  function hideIndicator(delay = 0) {
+    if (!indicator) return;
+    setTimeout(() => {
+      indicator.classList.remove("swiping", "ready");
+      indicator.style.opacity = "0";
+      indicator.style.transform = "translate3d(-64px,-50%,0) scale(0.88)";
+      indicator.textContent = "← 返回";
+    }, delay);
+  }
+
+  function cancelGesture() {
+    tracking = false;
+    horizontal = false;
+    lastDeltaX = 0;
+    hideIndicator();
+  }
+
+  document.addEventListener("touchstart", (e) => {
+    if (e.touches.length !== 1) {
+      if (tracking) cancelGesture();
+      return;
+    }
+    if (viewStack.length === 0 || browserBackPending) return;
+    const touch = e.touches[0];
+    if (touch.clientX > EDGE_WIDTH) return;
+    startX = touch.clientX;
+    startY = touch.clientY;
+    lastDeltaX = 0;
+    tracking = true;
+    horizontal = false;
+  }, { passive: true });
+
+  document.addEventListener("touchmove", (e) => {
+    if (!tracking) return;
+    if (e.touches.length !== 1) {
+      cancelGesture();
+      return;
+    }
+    const touch = e.touches[0];
+    const deltaX = touch.clientX - startX;
+    const deltaY = Math.abs(touch.clientY - startY);
+    if (!horizontal) {
+      if (deltaX < 0 || (deltaY > 12 && deltaY >= deltaX)) {
+        cancelGesture();
+        return;
+      }
+      if (deltaX < 8 || deltaX <= deltaY * 1.2) return;
+      horizontal = true;
+    }
+    e.preventDefault();
+    lastDeltaX = deltaX;
+    paint(deltaX);
+  }, { passive: false });
+
+  document.addEventListener("touchend", (e) => {
+    if (!tracking) return;
+    if (e.touches.length !== 0) {
+      cancelGesture();
+      return;
+    }
+    const shouldBack = horizontal && lastDeltaX >= TRIGGER_DISTANCE && viewStack.length > 0;
+    tracking = false;
+    horizontal = false;
+    if (shouldBack) {
+      paint(TRIGGER_DISTANCE);
+      try { navigator.vibrate?.(20); } catch {}
+      goBack();
+      hideIndicator(140);
+    } else {
+      hideIndicator();
+    }
+    lastDeltaX = 0;
+  }, { passive: true });
+  document.addEventListener("touchcancel", cancelGesture, { passive: true });
+}
+
+// ─── Pull-to-refresh ────────────────────────────────────────────────
+// Allows users to pull down on the session/project list to refresh.
+function setupPullToRefresh() {
+  const content = document.getElementById("content");
+  const indicator = document.getElementById("pullRefreshIndicator");
+  if (!content || !indicator) return;
+
+  let startX = 0;
+  let startY = 0;
+  let lastDeltaY = 0;
+  let tracking = false;
+  let pulling = false;
+  let refreshing = false;
+  let feedbackTimer = null;
+  const PULL_THRESHOLD = 68;
+
+  function hidePullIndicator(delay = 0) {
+    if (feedbackTimer) clearTimeout(feedbackTimer);
+    feedbackTimer = setTimeout(() => {
+      feedbackTimer = null;
+      indicator.classList.remove("visible", "refreshing");
+      indicator.style.opacity = "";
+      indicator.style.transform = "";
+      indicator.textContent = "↓ 下拉刷新";
+    }, delay);
+  }
+
+  function cancelPull() {
+    tracking = false;
+    pulling = false;
+    lastDeltaY = 0;
+    if (!refreshing) hidePullIndicator();
+  }
+
+  content.addEventListener("touchstart", (e) => {
+    if (e.touches.length !== 1 || refreshing) return;
+    if (currentView !== "projects" && currentView !== "sessions") return;
+    if (content.scrollTop > 1) return;
+    if (feedbackTimer) { clearTimeout(feedbackTimer); feedbackTimer = null; }
+    const touch = e.touches[0];
+    startX = touch.clientX;
+    startY = touch.clientY;
+    lastDeltaY = 0;
+    tracking = true;
+    pulling = false;
+  }, { passive: true });
+
+  content.addEventListener("touchmove", (e) => {
+    if (!tracking || refreshing) return;
+    if (e.touches.length !== 1) {
+      cancelPull();
+      return;
+    }
+    const touch = e.touches[0];
+    const deltaX = Math.abs(touch.clientX - startX);
+    const deltaY = touch.clientY - startY;
+    if (deltaY <= 0 || (deltaX > 12 && deltaX >= deltaY)) {
+      cancelPull();
+      return;
+    }
+    if (content.scrollTop > 1) {
+      cancelPull();
+      return;
+    }
+    if (deltaY < 6) return;
+
+    // Once the gesture is clearly downward, take ownership from Android's
+    // native overscroll so touchend is delivered reliably.
+    pulling = true;
+    lastDeltaY = deltaY;
+    e.preventDefault();
+    const progress = Math.min(deltaY / PULL_THRESHOLD, 1);
+    indicator.classList.add("visible");
+    indicator.style.opacity = String(0.25 + progress * 0.75);
+    indicator.style.transform = `translateY(${Math.min(10, deltaY * 0.1)}px)`;
+    indicator.textContent = progress >= 1 ? "↑ 松开刷新" : "↓ 下拉刷新";
+  }, { passive: false });
+
+  content.addEventListener("touchend", async (e) => {
+    if (!tracking || refreshing) return;
+    if (e.touches.length !== 0) {
+      cancelPull();
+      return;
+    }
+    const shouldRefresh = pulling && lastDeltaY >= PULL_THRESHOLD;
+    tracking = false;
+    pulling = false;
+    lastDeltaY = 0;
+    indicator.style.opacity = "";
+    indicator.style.transform = "";
+
+    if (!shouldRefresh) {
+      hidePullIndicator();
+      return;
+    }
+
+    refreshing = true;
+    const startedAt = Date.now();
+    let succeeded = true;
+    indicator.textContent = "刷新中…";
+    indicator.classList.add("visible", "refreshing");
+    try {
+      if (currentView === "projects") {
+        await showProjects(true);
+      } else if (currentView === "sessions") {
+        await showSessions(currentProjectId, true);
+      }
+    } catch (e) {
+      succeeded = false;
+      console.warn("[mobile] pull-to-refresh failed:", e);
+    } finally {
+      const remaining = Math.max(0, 450 - (Date.now() - startedAt));
+      if (remaining) await new Promise((resolve) => setTimeout(resolve, remaining));
+      refreshing = false;
+      indicator.classList.remove("refreshing");
+      indicator.textContent = succeeded ? "✓ 已刷新" : "刷新失败，请重试";
+      hidePullIndicator(650);
+    }
+  }, { passive: true });
+
+  content.addEventListener("touchcancel", cancelPull, { passive: true });
+}
+
+// ─── Init ────────────────────────────────────────────────────────────
+(async function init() {
+  // Register service worker with automatic, no-cache-clear updates.
+  // PWA_VERSION must match VERSION in sw.js; bump BOTH on every deploy. (v44: fix ctx-anchor not updating for desktop-sent messages; v51: keep pi-router/auto selected in the model picker instead of the resolved backend model)
+  // Updates are applied SILENTLY in the background: the new SW takes over via
+  // skipWaiting+claim and the network-first shell serves the fresh version on
+  // the next cold launch. We never reload the live page here — doing so mid-
+  // session wiped chat state and dropped users to the project list (the
+  // "auto-refresh / dropped and re-entered" instability).
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/mobile/sw.js", { updateViaCache: "none" }).then((reg) => {
+      navigator.serviceWorker.addEventListener("message", (e) => {
+        const d = e.data;
+        if (d && d.type === "sw-version") {
+          if (d.version && d.version !== PWA_VERSION) {
+            // This page is a stale shell while a fresh SW is active. Reloading
+            // is SAFE outside chat (login/projects/sessions have nothing to
+            // lose), so pick up the new shell immediately instead of waiting for
+            // the user's next cold launch — this is what actually delivers a
+            // theme/colour fix to an already-open PWA. Guarded once per version
+            // via sessionStorage so it can never loop. Inside chat we still
+            // defer to the next cold launch to avoid dropping the conversation.
+            let reloadedFor = "";
+            try { reloadedFor = sessionStorage.getItem("piReloadedFor") || ""; } catch {}
+            if (currentView !== "chat" && reloadedFor !== d.version) {
+              try { sessionStorage.setItem("piReloadedFor", d.version); } catch {}
+              console.info("[sw] stale shell", PWA_VERSION, "-> reloading to", d.version);
+              window.location.reload();
+              return;
+            }
+            console.info("[sw] newer shell", d.version, "active (page", PWA_VERSION + "); applies on next launch, no reload");
+          }
+        }
+      });
+      // When a freshly-installed SW takes control mid-session, re-ask its
+      // version so the stale-shell check above runs again (the initial
+      // get-version went to the OLD controller and reported the old version).
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        if (navigator.serviceWorker.controller) {
+          navigator.serviceWorker.controller.postMessage("get-version");
+        }
+      });
+      // Ask the active SW for its version (covers the case where it activated
+      // before this page attached its listener).
+      if (navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage("get-version");
+      }
+      // Check for updates when the app becomes visible and every few minutes,
+      // instead of waiting for the browser's 24h default SW update check.
+      const checkUpdate = () => reg.update().catch(() => {});
+      checkUpdate(); // do not wait for visibilitychange or the five-minute timer
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") checkUpdate();
+      });
+      setInterval(checkUpdate, 5 * 60 * 1000);
+    }).catch(() => {});
+  }
+  setupZoomLimit();
+  setupViewportHandling();
+  setupTapOutside();
+  setupPullToRefresh();
+  setupWakeLock();
+  setupBrowserBackIntercept();
+  setupSwipeBackGesture();
+
+  // Reconnect the SSE stream after the OS suspends the tab or the network
+  // switches (WiFi<->cellular). Without this, a frozen EventSource can stay
+  // silently dead on wake, leaving the chat stuck until a manual refresh.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") wakeSSE();
+  });
+  window.addEventListener("online", wakeSSE);
+  const contentEl = document.getElementById("content");
+  if (contentEl) contentEl.addEventListener("scroll", onContentScroll, { passive: true });
+  // Custom scrollbar wiring: drag the thumb, click the rail to jump a page, and
+  // keep the thumb in sync via a MutationObserver (content changes, incl. live
+  // streaming tokens) + ResizeObserver (container resizes / keyboard). This is
+  // what gives Android a scrollbar that is visible on demand AND draggable — the
+  // native overlay is neither, which is why the old one looked "broken".
+  (function wireCustomScrollbar() {
+    const rail = document.getElementById("scrollRail");
+    const thumb = document.getElementById("scrollThumb");
+    const c = document.getElementById("content");
+    if (!rail || !thumb || !c) return;
+    let drag = false, startY = 0, startTop = 0;
+    thumb.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      drag = true; rail.classList.add("dragging");
+      try { thumb.setPointerCapture(e.pointerId); } catch {}
+      startY = e.clientY; startTop = c.scrollTop;
+    });
+    thumb.addEventListener("pointermove", (e) => {
+      if (!drag) return;
+      const railH = rail.clientHeight, thumbH = thumb.offsetHeight;
+      const travel = railH - thumbH, max = c.scrollHeight - c.clientHeight;
+      if (travel <= 0 || max <= 0) return;
+      c.scrollTop = startTop + (e.clientY - startY) * (max / travel);
+    });
+    const endDrag = (e) => {
+      if (!drag) return; drag = false; rail.classList.remove("dragging");
+      try { thumb.releasePointerCapture(e.pointerId); } catch {}
+      showScrollRail();
+    };
+    thumb.addEventListener("pointerup", endDrag);
+    thumb.addEventListener("pointercancel", endDrag);
+    rail.addEventListener("pointerdown", (e) => {
+      if (e.target === thumb) return; // the thumb handles its own drag
+      const rect = rail.getBoundingClientRect();
+      const max = c.scrollHeight - c.clientHeight;
+      if (max <= 0) return;
+      const ratio = (e.clientY - rect.top) / rect.height;
+      c.scrollTop = Math.max(0, Math.min(max, ratio * c.scrollHeight - c.clientHeight / 2));
+      showScrollRail();
+    });
+    if ("ResizeObserver" in window) new ResizeObserver(() => updateScrollThumb()).observe(c);
+    if ("MutationObserver" in window) {
+      // Child-list changes cover view/list replacement. Streaming code schedules
+      // thumb updates directly, so observing every character mutation would only
+      // duplicate layout reads on long replies.
+      new MutationObserver(() => scheduleScrollUI(false))
+        .observe(c, { childList: true, subtree: true });
+    }
+  })();
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    if (currentView === "projects") showProjects(true);
+    else if (currentView === "sessions") showSessions(currentProjectId, true);
+    else if (currentView === "chat") { refreshHistory(); refreshState(); }
+  });
+
+  // ── Long-press header title to copy session ID ───────────────────
+  let _headerLPTimer = null;
+  const _header = document.getElementById("header");
+  if (_header) {
+    _header.addEventListener("touchstart", (e) => {
+      const t = e.target;
+      if (!t || !t.closest || !t.closest(".header .title")) return;
+      _headerLPTimer = setTimeout(() => {
+        _headerLPTimer = null;
+        if (currentView === "chat" && currentSessionId) {
+          copySessionIdToast(currentSessionId);
+        }
+      }, 500);
+    }, { passive: true });
+    _header.addEventListener("touchend", () => { if (_headerLPTimer) { clearTimeout(_headerLPTimer); _headerLPTimer = null; } });
+    _header.addEventListener("touchmove", () => { if (_headerLPTimer) { clearTimeout(_headerLPTimer); _headerLPTimer = null; } });
+    _header.addEventListener("touchcancel", () => { if (_headerLPTimer) { clearTimeout(_headerLPTimer); _headerLPTimer = null; } });
+  }
+
+  function copySessionIdToast(id) {
+    try { navigator.clipboard.writeText(id).catch(() => {}); } catch {}
+    const old = document.querySelector(".toast-msg");
+    if (old) old.remove();
+    const t = document.createElement("div");
+    t.className = "toast-msg";
+    t.textContent = "\u2705 \u4f1a\u8bddID\u5df2\u590d\u5236";
+    document.body.appendChild(t);
+    try { if (navigator.vibrate) navigator.vibrate(30); } catch {}
+    setTimeout(() => { if (t.parentNode) t.remove(); }, 2000);
+  }
+  // Check if already authenticated
+  try {
+    await api("/projects");
+    currentView = "projects";
+    viewStack = [];
+    resetBrowserNavigationRoot();
+    renderView();
+  } catch {
+    showLogin();
+  }
+})();
+</script>
+</body>
+</html>
