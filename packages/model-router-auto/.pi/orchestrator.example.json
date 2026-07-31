@@ -1,0 +1,35 @@
+{
+  "_comment": "Copy this file to .pi/orchestrator.json and replace every example model reference with an available local model. Never commit the resulting personal configuration.",
+  "virtualModel": {
+    "provider": "orchestrator",
+    "id": "auto",
+    "name": "Automatic Router",
+    "contextWindow": 200000,
+    "maxTokens": 32000
+  },
+  "models": {
+    "fast": "example-provider/fast-model",
+    "executor": "example-provider/coding-model",
+    "planner": "example-provider/reasoning-model",
+    "diagnostician": "example-provider/reasoning-model",
+    "reviewers": ["example-provider/review-model"]
+  },
+  "fallback": ["example-provider/fallback-model"],
+  "limits": {
+    "maxSwitchesPerTurn": 2,
+    "maxRetriesPerError": 2,
+    "maxReviewers": 3,
+    "modelStickinessTurns": 3
+  },
+  "thinking": {
+    "planner": "high",
+    "diagnostician": "high",
+    "executor": "medium",
+    "fast": "low"
+  },
+  "holdout": {
+    "enabled": false,
+    "model": "example-provider/control-model",
+    "fallback": ["example-provider/fallback-model"]
+  }
+}

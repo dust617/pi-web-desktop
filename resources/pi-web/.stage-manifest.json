@@ -1,0 +1,29 @@
+{
+  "version": "0.8.5",
+  "gitTag": "v0.8.5",
+  "gitTagPeeledCommit": "cbb080df9d1c6c92509c26c7f3b902151e7e0af5",
+  "npmGitHead": "fdc28d54d75d3c330e8f34032a9f8b399ecae21a",
+  "shasum": "0a213b31ebd22ed2770f064a3a9c97abc478a8fd",
+  "integrity": "sha512-oEl07FEuy7v4euyY75Ftj87gY6X+XGiQE/DGrxl5wgTQaPpCyYpKbV93knIXMuqeqXpah2iBX9LcBwcWsnbYsQ==",
+  "buildId": "5tW1tP9r8GjAaTS6-oguc",
+  "buildFromSource": true,
+  "requiredCompiledRoutes": [
+    "/api/archived-sessions"
+  ],
+  "stagedAt": "2026-07-31T07:06:50.176Z",
+  "nodeVersion": "v24.15.0",
+  "patches": [
+    "outputFileTracingRoot",
+    "archived-sessions-route",
+    "directory-browser-windows-paths",
+    "isolated-build-home",
+    "test-script",
+    "session-ui-adapters"
+  ],
+  "piCodingAgentVersion": "0.83.0",
+  "tests": {
+    "command": "npm test",
+    "passed": true,
+    "note": "211/212 pass; 1 upstream env failure (project-trust Windows 8.3 short-name + ~/.agents/skills collision in pi-coding-agent 0.83.0)"
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "name": "pi-web-desktop",
+  "version": "0.3.5",
+  "description": "Electron thin shell for Pi Web – desktop edition",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "npm run build && electron .",
+    "dev": "tsc --watch",
+    "test:mobile": "npm run build && node mobile/tests/runtime.test.mjs && node mobile/tests/bff.test.mjs && node mobile/tests/pwa-stream.test.mjs && node mobile/tests/pwa-navigation.test.mjs && node mobile/tests/pwa-shell.test.mjs",
+    "test:pi-web": "npm --prefix resources/pi-web test",
+    "pi-web:stage": "node scripts/pi-web-stage.mjs",
+    "test:package": "node mobile/tests/package-parity.test.mjs",
+    "test:memory": "node scripts/tests/memory-guard.test.mjs",
+    "memory:check": "node scripts/check-memory.mjs",
+    "memory:archive": "node scripts/archive-memory-task.mjs",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder --publish never",
+    "test:tunnel": "node tests/tunnel.test.mjs",
+    "test:router": "npm --prefix packages/model-router-auto test"
+  },
+  "keywords": [
+    "pi",
+    "electron",
+    "desktop"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "40.10.6",
+    "electron-builder": "^26.15.3",
+    "typescript": "^5.9.3"
+  }
+}
