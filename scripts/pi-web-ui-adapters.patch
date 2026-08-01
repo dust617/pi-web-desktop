@@ -1,0 +1,560 @@
+diff --git a/.tmp/pi-web-upstream/components/SessionSidebar.tsx b/resources/pi-web/components/SessionSidebar.tsx
+index 4b339f8..329b654 100644
+--- a/.tmp/pi-web-upstream/components/SessionSidebar.tsx
++++ b/resources/pi-web/components/SessionSidebar.tsx
+@@ -2,7 +2,9 @@
+
+ import { useEffect, useLayoutEffect, useState, useCallback, useRef, type CSSProperties, type ReactNode } from "react";
+ import type { SessionInfo } from "@/lib/types";
+ import { useI18n } from "@/hooks/useI18n";
++import { copyText } from "@/lib/clipboard";
++import { formatSessionCopyDetails } from "@/lib/session-copy";
+ import { DirectoryPicker } from "./DirectoryPicker";
+ import { FileExplorer, type FileExplorerHandle } from "./FileExplorer";
+
+@@ -361,6 +363,86 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
+   const explorerRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+   const fileExplorerRef = useRef<FileExplorerHandle>(null);
+
++  // Downstream extension boundary: the archive data/API and this menu are kept
++  // separate from upstream tree rendering, so a pi-web upgrade only needs this
++  // small adapter rather than a fork of session handling.
++  const [contextMenu, setContextMenu] = useState<{ session: SessionInfo; x: number; y: number } | null>(null);
++  const menuRef = useRef<HTMLDivElement>(null);
++  const [copiedToast, setCopiedToast] = useState(false);
++  const [archivedIds, setArchivedIds] = useState<Set<string>>(new Set());
++  const [showArchived, setShowArchived] = useState(false);
++
++  useEffect(() => {
++    fetch("/api/archived-sessions")
++      .then((response) => response.ok ? response.json() : null)
++      .then((data) => { if (Array.isArray(data?.ids)) setArchivedIds(new Set(data.ids)); })
++      .catch(() => {});
++  }, []);
++
++  useEffect(() => {
++    if (!contextMenu) return;
++    const close = (event: MouseEvent) => {
++      if (!menuRef.current?.contains(event.target as Node)) setContextMenu(null);
++    };
++    const onKeyDown = (event: KeyboardEvent) => {
++      if (event.key === "Escape") setContextMenu(null);
++    };
++    document.addEventListener("mousedown", close);
++    document.addEventListener("keydown", onKeyDown);
++    return () => {
++      document.removeEventListener("mousedown", close);
++      document.removeEventListener("keydown", onKeyDown);
++    };
++  }, [contextMenu]);
++
++  const persistArchived = useCallback((ids: Set<string>) => {
++    setArchivedIds(ids);
++    void fetch("/api/archived-sessions", {
++      method: "PUT",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({ ids: [...ids] }),
++    }).catch(() => {});
++  }, []);
++
++  const collectDescendantIds = useCallback((rootId: string): string[] => {
++    const children = new Map<string, string[]>();
++    for (const session of allSessions) {
++      if (!session.parentSessionId) continue;
++      const ids = children.get(session.parentSessionId) ?? [];
++      ids.push(session.id);
++      children.set(session.parentSessionId, ids);
++    }
++    const ids: string[] = [];
++    const pending = [rootId];
++    while (pending.length) {
++      const id = pending.pop()!;
++      ids.push(id);
++      pending.push(...(children.get(id) ?? []));
++    }
++    return ids;
++  }, [allSessions]);
++
++  const handleArchive = useCallback((sessionId: string) => {
++    const next = new Set(archivedIds);
++    for (const id of collectDescendantIds(sessionId)) next.add(id);
++    persistArchived(next);
++    setContextMenu(null);
++  }, [archivedIds, collectDescendantIds, persistArchived]);
++
++  const handleUnarchive = useCallback((sessionId: string) => {
++    const next = new Set(archivedIds);
++    next.delete(sessionId);
++    persistArchived(next);
++    setContextMenu(null);
++  }, [archivedIds, persistArchived]);
++
++  const handleCopySessionDetails = useCallback((session: SessionInfo) => {
++    void copyText(formatSessionCopyDetails(session));
++    setContextMenu(null);
++    setCopiedToast(true);
++    setTimeout(() => setCopiedToast(false), 1800);
++  }, []);
++
+   const loadSessions = useCallback(async (showLoading = false) => {
+     try {
+       if (showLoading) setLoading(true);
+@@ -720,9 +802,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
+
+   // Sessions of every worktree in the selected project are shown together
+   const selectedProject = projectRootFor(selectedCwd);
+-  const filteredSessions = selectedProject
++  const filteredSessions = (selectedProject
+     ? allSessions.filter((s) => (s.projectRoot ?? s.cwd) === selectedProject)
+-    : allSessions;
++    : allSessions
++  ).filter((session) => showArchived || !archivedIds.has(session.id));
+   const showWorktreeSwitcher = Boolean(
+     worktreeState?.isGit
+     && worktreeState.isTopLevel
+@@ -757,6 +840,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
+
+   return (
+     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
++      <style>{`@keyframes sidebarToastFade { 0%{opacity:0} 12%{opacity:1} 78%{opacity:1} 100%{opacity:0} }`}</style>
+       {customPathOpen && (
+         <DirectoryPicker
+           busy={customPathValidating}
+@@ -1368,6 +1452,16 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
+         )}
+       </div>
+
++      {/* Archive toggle */}
++      {archivedIds.size > 0 && (
++        <button
++          onClick={() => setShowArchived((value) => !value)}
++          style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 14px", background: "none", border: "none", borderBottom: "1px solid var(--border)", color: showArchived ? "var(--accent)" : "var(--text-muted)", fontSize: 11, cursor: "pointer", width: "100%", textAlign: "left" }}
++        >
++          <span>{showArchived ? "隐藏已归档" : "显示已归档"}（{archivedIds.size}）</span>
++        </button>
++      )}
++
+       {/* Session list */}
+       <div style={{ flex: explorerOpen && (selectedCwdProp || selectedCwd) ? "1 1 0" : "1 1 auto", overflowY: "auto", padding: "0", minHeight: 80 }}>
+         {loading && (
+@@ -1392,17 +1486,51 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
+             selectedSessionId={selectedSessionId}
+             runningSessionIds={runningSessionIds}
+             unreadSessionIds={unreadSessionIds}
++            archivedIds={archivedIds}
+             onSelectSession={handleSelectSessionFromList}
+             onRenamed={loadSessions}
+             onSessionDeleted={(id) => {
++              setContextMenu(null);
+               onSessionDeleted?.(id);
+               loadSessions();
+             }}
++            onContextMenu={(event, session) => {
++              event.preventDefault();
++              event.stopPropagation();
++              setContextMenu({
++                session,
++                x: Math.max(8, Math.min(event.clientX, window.innerWidth - 220)),
++                y: Math.max(8, Math.min(event.clientY, window.innerHeight - 110)),
++              });
++            }}
+             depth={0}
+           />
+         ))}
+       </div>
+
++      {contextMenu && (
++        <div ref={menuRef} style={{ position: "fixed", left: contextMenu.x, top: contextMenu.y, zIndex: 9999, minWidth: 205, padding: "4px 0", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.18)" }}>
++          <button
++            onClick={() => handleCopySessionDetails(contextMenu.session)}
++            style={{ display: "block", width: "100%", padding: "8px 12px", background: "none", border: "none", color: "var(--text)", fontSize: 12, cursor: "pointer", textAlign: "left" }}
++          >
++            复制会话 ID 和文件路径
++          </button>
++          <div style={{ height: 1, margin: "2px 8px", background: "var(--border)" }} />
++          <button
++            onClick={() => archivedIds.has(contextMenu.session.id) ? handleUnarchive(contextMenu.session.id) : handleArchive(contextMenu.session.id)}
++            style={{ display: "block", width: "100%", padding: "8px 12px", background: "none", border: "none", color: "var(--text)", fontSize: 12, cursor: "pointer", textAlign: "left" }}
++          >
++            {archivedIds.has(contextMenu.session.id) ? "取消归档" : "归档会话及其分支"}
++          </button>
++        </div>
++      )}
++      {copiedToast && (
++        <div style={{ position: "fixed", left: "50%", top: "50%", transform: "translate(-50%, -50%)", zIndex: 10000, padding: "10px 20px", borderRadius: 10, background: "rgba(0,0,0,0.82)", color: "#fff", fontSize: 13, pointerEvents: "none", animation: "sidebarToastFade 1.8s ease forwards", whiteSpace: "nowrap" }}>
++          ✓ 已复制会话 ID 和文件路径
++        </div>
++      )}
++
+       {/* File Explorer section */}
+       {(selectedCwdProp || selectedCwd) && (
+         <div
+@@ -1531,18 +1659,22 @@ function SessionTreeItem({
+   selectedSessionId,
+   runningSessionIds,
+   unreadSessionIds,
++  archivedIds,
+   onSelectSession,
+   onRenamed,
+   onSessionDeleted,
++  onContextMenu,
+   depth,
+ }: {
+   node: SessionTreeNode;
+   selectedSessionId: string | null;
+   runningSessionIds: Set<string>;
+   unreadSessionIds: Set<string>;
++  archivedIds: Set<string>;
+   onSelectSession: (s: SessionInfo) => void;
+   onRenamed?: () => void;
+   onSessionDeleted?: (id: string) => void;
++  onContextMenu: (event: React.MouseEvent, session: SessionInfo) => void;
+   depth: number;
+ }) {
+   const [collapsed, setCollapsed] = useState(false);
+@@ -1567,9 +1699,11 @@ function SessionTreeItem({
+           isSelected={node.session.id === selectedSessionId}
+           isRunning={runningSessionIds.has(node.session.id)}
+           isUnread={unreadSessionIds.has(node.session.id)}
++          isArchived={archivedIds.has(node.session.id)}
+           onClick={() => onSelectSession(node.session)}
+           onRenamed={onRenamed}
+           onDeleted={(id) => onSessionDeleted?.(id)}
++          onContextMenu={onContextMenu}
+           depth={depth}
+           hasChildren={hasChildren}
+           collapsed={collapsed}
+@@ -1585,9 +1719,11 @@ function SessionTreeItem({
+               selectedSessionId={selectedSessionId}
+               runningSessionIds={runningSessionIds}
+               unreadSessionIds={unreadSessionIds}
++              archivedIds={archivedIds}
+               onSelectSession={onSelectSession}
+               onRenamed={onRenamed}
+               onSessionDeleted={onSessionDeleted}
++              onContextMenu={onContextMenu}
+               depth={depth + 1}
+             />
+           ))}
+@@ -1665,9 +1801,11 @@ function SessionItem({
+   isSelected,
+   isRunning,
+   isUnread,
++  isArchived,
+   onClick,
+   onRenamed,
+   onDeleted,
++  onContextMenu,
+   depth = 0,
+   hasChildren = false,
+   collapsed = false,
+@@ -1677,9 +1815,11 @@ function SessionItem({
+   isSelected: boolean;
+   isRunning?: boolean;
+   isUnread?: boolean;
++  isArchived?: boolean;
+   onClick: () => void;
+   onRenamed?: () => void;
+   onDeleted?: (id: string) => void;
++  onContextMenu?: (event: React.MouseEvent, session: SessionInfo) => void;
+   depth?: number;
+   hasChildren?: boolean;
+   collapsed?: boolean;
+@@ -1745,6 +1885,10 @@ function SessionItem({
+   return (
+     <div
+       onClick={confirmDelete || renaming ? undefined : onClick}
++      onContextMenu={(event) => {
++        if (confirmDelete || renaming) return;
++        onContextMenu?.(event, session);
++      }}
+       onMouseEnter={() => setHovered(true)}
+       onMouseLeave={() => { setHovered(false); }}
+       style={{
+@@ -1761,7 +1905,7 @@ function SessionItem({
+           ? "2px solid #ef4444"
+           : isSelected ? "2px solid var(--accent)" : "2px solid transparent",
+         transition: "background 0.1s",
+-        opacity: deleting ? 0.5 : 1,
++        opacity: deleting ? 0.5 : isArchived ? 0.55 : 1,
+         gap: 6,
+         overflow: "hidden",
+       }}
+diff --git a/.tmp/pi-web-upstream/hooks/useAgentSession.ts b/resources/pi-web/hooks/useAgentSession.ts
+index bd3f5e7..a98291a 100644
+--- a/.tmp/pi-web-upstream/hooks/useAgentSession.ts
++++ b/resources/pi-web/hooks/useAgentSession.ts
+@@ -12,6 +12,7 @@ import type {
+ import { normalizeToolCalls } from "@/lib/normalize";
+ import { sendAgentCommand } from "@/lib/agent-client";
+ import { getToolNamesForPreset, type ToolEntry } from "@/lib/tool-presets";
++import { getPromptFailureRecovery } from "@/lib/prompt-failure";
+ import type { SessionStatsInfo } from "@/lib/pi-types";
+
+ export interface SessionData {
+@@ -378,6 +379,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
+   const lastUserMsgRef = useRef<HTMLDivElement | null>(null);
+   const pendingScrollToUserRef = useRef(false);
+   const completionScrollAllowedRef = useRef(true);
++  const pendingCompactionScrollRef = useRef(false);
+   const executeBashRef = useRef<(command: string, excludeFromContext: boolean) => Promise<void> | undefined>(undefined);
+   const userScrollIntentUntilRef = useRef(0);
+   const ignoreProgrammaticScrollUntilRef = useRef(0);
+@@ -1017,7 +1019,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
+           setCompactResult(null);
+         } else if (!event.aborted) {
+           setCompactResult(readCompactResult(event.result, (event.reason as string | undefined) ?? "auto"));
+-          if (sessionIdRef.current) loadSession(sessionIdRef.current);
++          pendingCompactionScrollRef.current = completionScrollAllowedRef.current;
++          if (sessionIdRef.current) void loadSession(sessionIdRef.current);
+         }
+         break;
+       case "extension_ui_request":
+@@ -1306,7 +1306,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
+       rpcPromptPendingRef.current = false;
+       agentRunningRef.current = false;
+       closeEvents();
+-      if (e instanceof EventStreamConnectionError) {
++      const recovery = getPromptFailureRecovery(e instanceof EventStreamConnectionError);
++      if (recovery.definitelyNotSent) {
+         const optimisticKey = optimisticUserMessageKeyRef.current;
+         if (optimisticKey) {
+           setMessages((prev) => {
+@@ -1316,11 +1317,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
+               : prev;
+           });
+         }
+-        addNotice({ type: "error", message: e.message });
++        addNotice({ type: "error", message: e instanceof Error ? e.message : String(e) });
+         // The prompt never reached the agent, so restore the user's text into
+         // the input instead of losing it. Mirrors the shell-command recovery in
+         // executeBash; insertIfEmpty avoids clobbering anything typed since.
+         if (message) opts.chatInputRef?.current?.insertIfEmpty(message);
+       }
+       optimisticUserMessageKeyRef.current = null;
+       setAgentRunning(false);
+@@ -1244,6 +1251,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
+     try {
+       const result = await sendAgentCommand<CompactCommandResult>(sid, { type: "compact" });
+       setCompactResult(readCompactResult(result, "manual"));
++      pendingCompactionScrollRef.current = completionScrollAllowedRef.current;
+       await loadSession(sid, true);
+     } catch (e) {
+       setCompactError(e instanceof Error ? e.message : String(e));
+@@ -1567,7 +1575,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
+
+   useEffect(() => {
+     if (messages.length > 0) {
+-      if (pendingScrollToUserRef.current) {
++      if (pendingCompactionScrollRef.current) {
++        pendingCompactionScrollRef.current = false;
++        if (completionScrollAllowedRef.current) {
++          initialScrollDoneRef.current = true;
++          scrollToBottom("instant");
++        }
++      } else if (pendingScrollToUserRef.current) {
+         pendingScrollToUserRef.current = false;
+         initialScrollDoneRef.current = true;
+         scrollUserMsgToTop();
+diff --git a/.tmp/pi-web-upstream/app/api/models/route.ts b/resources/pi-web/app/api/models/route.ts
+index e2ba47a..3ef6e59 100644
+--- a/.tmp/pi-web-upstream/app/api/models/route.ts
++++ b/resources/pi-web/app/api/models/route.ts
+@@ -3,8 +3,9 @@ import { resolve } from "path";
+ import { createAgentSessionServices, getAgentDir, type SettingsManager } from "@earendil-works/pi-coding-agent";
+ import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+ import { loadModelsWithCache, withModelRuntimeError, type ModelsData } from "@/lib/models-cache";
+ import { resolveVisibleModels, selectInitialModelScope } from "@/lib/model-scope";
++import { withSafeModelLoadFailure } from "@/lib/model-load-response";
+ import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
+ import { projectTrustReloadOptions } from "@/lib/project-trust";
+ 
+ export const dynamic = "force-dynamic";
+@@ -106,6 +107,6 @@ export async function GET(req: Request) {
+   try {
+     return Response.json(await loadModelsWithCache(cwd, () => loadModels(cwd)));
+   } catch {
+-    return Response.json(EMPTY_MODELS);
++    return Response.json(withSafeModelLoadFailure(EMPTY_MODELS));
+   }
+ }
+diff --git a/resources/pi-web/lib/session-copy.ts b/resources/pi-web/lib/session-copy.ts
+new file mode 100644
+index 0000000..ffbf9c3
+--- /dev/null
++++ b/resources/pi-web/lib/session-copy.ts
+@@ -0,0 +1,12 @@
++export interface CopyableSession {
++  id: string;
++  path: string;
++}
++
++/**
++ * Clipboard text for a session row. Keep this independent from the sidebar so
++ * upgrades can retain the user-facing format without copying UI internals.
++ */
++export function formatSessionCopyDetails(session: CopyableSession): string {
++  return `Session ID: ${session.id}\nSession file: ${session.path}`;
++}
+diff --git a/resources/pi-web/lib/session-copy.test.mjs b/resources/pi-web/lib/session-copy.test.mjs
+new file mode 100644
+index 0000000..d9e4535
+--- /dev/null
++++ b/resources/pi-web/lib/session-copy.test.mjs
+@@ -0,0 +1,17 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++
++async function loadSubject() {
++  return import("./session-copy.ts");
++}
++
++test("formats labelled session ID and JSONL path for clipboard", async () => {
++  const { formatSessionCopyDetails } = await loadSubject();
++  assert.equal(
++    formatSessionCopyDetails({
++      id: "019f9e47-edc9-7b90-b8be-1b0652d842d2",
++      path: "C:/Users/<USER>/.pi/agent/sessions/project/session.jsonl",
++    }),
++    "Session ID: 019f9e47-edc9-7b90-b8be-1b0652d842d2\nSession file: C:/Users/<USER>/.pi/agent/sessions/project/session.jsonl",
++  );
++});
+diff --git a/resources/pi-web/lib/prompt-failure.ts b/resources/pi-web/lib/prompt-failure.ts
+new file mode 100644
+index 0000000..204c106
+--- /dev/null
++++ b/resources/pi-web/lib/prompt-failure.ts
+@@ -0,0 +1,18 @@
++export interface PromptFailureRecovery {
++  /** The client knows this request never reached the agent. */
++  definitelyNotSent: boolean;
++  /** Safe text suitable for the UI; never include raw transport/config details. */
++  notice: string;
++}
++
++export function getPromptFailureRecovery(isEventStreamConnectionError: boolean): PromptFailureRecovery {
++  return isEventStreamConnectionError
++    ? {
++        definitelyNotSent: true,
++        notice: "连接中断，消息未发送；已恢复到输入框。",
++      }
++    : {
++        definitelyNotSent: false,
++        notice: "发送状态未确认。请刷新会话确认消息是否已送达后再重试。",
++      };
++}
+diff --git a/resources/pi-web/lib/prompt-failure.test.mjs b/resources/pi-web/lib/prompt-failure.test.mjs
+new file mode 100644
+index 0000000..0e9f970
+--- /dev/null
++++ b/resources/pi-web/lib/prompt-failure.test.mjs
+@@ -0,0 +1,18 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++
++async function loadSubject() {
++  return import("./prompt-failure.ts");
++}
++
++test("only a known event-stream failure is treated as definitely unsent", async () => {
++  const { getPromptFailureRecovery } = await loadSubject();
++  assert.deepEqual(getPromptFailureRecovery(true), {
++    definitelyNotSent: true,
++    notice: "连接中断，消息未发送；已恢复到输入框。",
++  });
++  assert.deepEqual(getPromptFailureRecovery(false), {
++    definitelyNotSent: false,
++    notice: "发送状态未确认。请刷新会话确认消息是否已送达后再重试。",
++  });
++});
+diff --git a/resources/pi-web/lib/model-load-response.ts b/resources/pi-web/lib/model-load-response.ts
+new file mode 100644
+index 0000000..3fb2a98
+--- /dev/null
++++ b/resources/pi-web/lib/model-load-response.ts
+@@ -0,0 +1,8 @@
++import type { ModelsData } from "./models-cache";
++
++export const MODEL_LOAD_FAILURE_MESSAGE = "模型列表暂时不可用，请检查配置后重试。";
++
++/** Keep server-side model/config failures actionable without exposing details. */
++export function withSafeModelLoadFailure(data: ModelsData): ModelsData {
++  return { ...data, modelError: MODEL_LOAD_FAILURE_MESSAGE };
++}
+diff --git a/resources/pi-web/lib/model-load-response.test.mjs b/resources/pi-web/lib/model-load-response.test.mjs
+new file mode 100644
+index 0000000..3d42f27
+--- /dev/null
++++ b/resources/pi-web/lib/model-load-response.test.mjs
+@@ -0,0 +1,15 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++
++async function loadSubject() {
++  return import("./model-load-response.ts");
++}
++
++test("returns a safe model-load error without preserving raw failure text", async () => {
++  const { MODEL_LOAD_FAILURE_MESSAGE, withSafeModelLoadFailure } = await loadSubject();
++  const result = withSafeModelLoadFailure({
++    models: {}, modelList: [], defaultModel: null, thinkingLevels: {}, thinkingLevelMaps: {},
++  });
++  assert.equal(result.modelError, MODEL_LOAD_FAILURE_MESSAGE);
++  assert.equal(JSON.stringify(result).includes("secret path or token"), false);
++});
+diff --git a/.tmp/pi-web-upstream/lib/session-reader.ts b/resources/pi-web/lib/session-reader.ts
+--- a/.tmp/pi-web-upstream/lib/session-reader.ts
++++ b/resources/pi-web/lib/session-reader.ts
+@@ -232,7 +232,23 @@
+   }
+ 
++  // Derive the picker model from the user's last explicit `model_change` on
++  // the active path (e.g. pi-router/auto). The SDK's piCtx.model is derived
++  // from the last assistant message, which records the *resolved* backend
++  // model the router actually used (e.g. aliyun-token-plan/qwen3.7-plus), so it
++  // flips the picker away from pi-router/auto after every turn. The user's
++  // selection lives only in model_change entries; fall back to piCtx.model only
++  // when the path has no model_change (e.g. a fresh session before any switch).
++  let pickerModel = piCtx.model;
++  for (let i = contextEntries.length - 1; i >= 0; i--) {
++    const e = contextEntries[i] as unknown as SessionEntry;
++    if (e?.type === "model_change") {
++      pickerModel = { provider: e.provider, modelId: e.modelId };
++      break;
++    }
++  }
++
+   return {
+     messages,
+     entryIds,
+     thinkingLevel: piCtx.thinkingLevel,
+-    model: piCtx.model,
++    model: pickerModel,
+   };
+diff --git a/.tmp/pi-web-upstream/components/ChatInput.test.mjs b/resources/pi-web/components/ChatInput.test.mjs
+--- a/.tmp/pi-web-upstream/components/ChatInput.test.mjs
++++ b/resources/pi-web/components/ChatInput.test.mjs
+@@ -11,3 +11,3 @@
+ const { ChatInput, ModelErrorBanner, ModelScopeWarningBanner, filterModelOptions } = await jiti.import("./ChatInput.tsx");
+-const { I18nProvider } = await jiti.import("../hooks/useI18n.tsx");
++const { I18nProvider } = await jiti.import("@/hooks/useI18n");
+ 
+ test("renders the upstream model error", () => {
+diff --git a/.tmp/pi-web-upstream/components/MermaidBlock.test.mjs b/resources/pi-web/components/MermaidBlock.test.mjs
+--- a/.tmp/pi-web-upstream/components/MermaidBlock.test.mjs
++++ b/resources/pi-web/components/MermaidBlock.test.mjs
+@@ -11,3 +11,3 @@
+ const { MermaidBlock } = await jiti.import("./MermaidBlock.tsx");
+-const { I18nProvider } = await jiti.import("../hooks/useI18n.tsx");
++const { I18nProvider } = await jiti.import("@/hooks/useI18n");
+ 
+ // Simple sequenceDiagram for testing
+diff --git a/.tmp/pi-web-upstream/components/MessageView.test.mjs b/resources/pi-web/components/MessageView.test.mjs
+--- a/.tmp/pi-web-upstream/components/MessageView.test.mjs
++++ b/resources/pi-web/components/MessageView.test.mjs
+@@ -11,3 +11,3 @@
+ const { MessageView } = await jiti.import("./MessageView.tsx");
+-const { I18nProvider } = await jiti.import("../hooks/useI18n.tsx");
++const { I18nProvider } = await jiti.import("@/hooks/useI18n");
+ 
+ function renderMessage(message) {

@@ -1,0 +1,108 @@
+{
+  "$schema": "Downstream patches applied on top of upstream @agegr/pi-web tarball",
+  "upstream": {
+    "version": "0.8.6",
+    "gitTag": "v0.8.6",
+    "gitTagPeeledCommit": "dfab5853b8d2f717df259e7ebc94f49a3c2e43e7",
+    "npmGitHead": "edf4c5d5d1ade7c8c1ec995cb92fe572337378f7",
+    "shasum": "9b7a0348b315ba57a5ff3d266d8895b35e6c67e6",
+    "integrity": "sha512-YwjLMr9bJpR9EnbGe63j4PNml3cAxeKsM3wGUgYJqXP1eo7yME2etelPoRr582/Mp2OPmTLh0tRmUD9gXWf81Q==",
+    "engines": ">=22.19.0",
+    "piCodingAgentVersion": "0.83.0"
+  },
+  "patches": [
+    {
+      "id": "outputFileTracingRoot",
+      "origin": "843cdd3",
+      "purpose": "Scope Next.js outputFileTracingRoot to the pi-web package directory so Electron packaging resolves server externals correctly",
+      "upstreamStatus": "not-absorbed",
+      "files": [
+        "next.config.ts"
+      ],
+      "test": "npm run build succeeds; packaged app resolves pi-coding-agent server externals",
+      "removalCondition": "Upstream sets outputFileTracingRoot in published next.config.ts or electron-builder handles it"
+    },
+    {
+      "id": "archived-sessions-route",
+      "origin": "c3c646e",
+      "purpose": "Add GET/PUT /api/archived-sessions route for mobile session archive management",
+      "upstreamStatus": "not-in-upstream",
+      "files": [
+        "app/api/archived-sessions/route.ts"
+      ],
+      "test": "mobile/tests/package-parity.test.mjs; GET returns {ids:[]}; PUT persists and re-reads",
+      "removalCondition": "Archive management migrated into authenticated MobileBridge BFF"
+    },
+    {
+      "id": "directory-browser-windows-paths",
+      "origin": "local",
+      "purpose": "Preserve POSIX parent-path semantics when the web service runs on Windows",
+      "upstreamStatus": "not-in-upstream",
+      "files": [
+        "lib/directory-browser.ts"
+      ],
+      "test": "npm test covers POSIX, Windows drive, and UNC parent paths",
+      "removalCondition": "Upstream directory browser selects path.posix for serialized POSIX paths"
+    },
+    {
+      "id": "isolated-build-home",
+      "origin": "local",
+      "purpose": "Run Next build with an isolated HOME/USERPROFILE so tracing does not scan unreadable Windows profile junctions",
+      "upstreamStatus": "not-in-upstream",
+      "files": [
+        "bin/pi-web-build.mjs",
+        "package.json",
+        ".gitignore"
+      ],
+      "test": "npm run build succeeds with a real outputFileTracingRoot and compiled archived-sessions route",
+      "removalCondition": "Upstream build no longer reads user-home paths during output tracing on Windows"
+    },
+    {
+      "id": "test-script",
+      "origin": "local",
+      "purpose": "Add test script entry for downstream unit tests (lib/*.test.mjs, components/*.test.mjs)",
+      "upstreamStatus": "not-in-upstream",
+      "files": [
+        "package.json"
+      ],
+      "test": "npm test runs downstream tests",
+      "removalCondition": "Upstream includes equivalent test script"
+    },
+    {
+      "id": "session-ui-adapters",
+      "origin": "local",
+      "purpose": "Keep downstream session copy/archive UI and safe prompt/compaction/model recovery, picker-model derivation, and jiti-consistent test imports as a fail-closed adapter patch",
+      "upstreamStatus": "not-in-upstream",
+      "files": [
+        "components/SessionSidebar.tsx",
+        "hooks/useAgentSession.ts",
+        "app/api/models/route.ts",
+        "lib/session-copy.ts",
+        "lib/prompt-failure.ts",
+        "lib/model-load-response.ts",
+        "lib/session-reader.ts",
+        "components/ChatInput.test.mjs",
+        "components/MermaidBlock.test.mjs",
+        "components/MessageView.test.mjs"
+      ],
+      "test": "npm test covers copy, prompt/model recovery; build validates UI adapter types; manual archive/copy/compaction smoke",
+      "removalCondition": "Upstream offers stable extension hooks for session-row actions and equivalent recovery UX"
+    }
+  ],
+  "droppedPatches": [
+    {
+      "id": "markdown-local-images",
+      "origin": "b61188a",
+      "purpose": "Preview local images in Markdown",
+      "upstreamStatus": "partially-absorbed",
+      "action": "Do not re-apply; verify upstream behavior covers click-to-open, max size, UNC paths via staged smoke test"
+    }
+  ],
+  "knownTestFailures": [
+    {
+      "file": "lib/project-trust.test.mjs",
+      "test": "clean projects stay on the normal trusted load path",
+      "reason": "Windows 8.3 short-name path collision with ~/.agents/skills in pi-coding-agent 0.83.0 (reproduced on the working 0.8.5 tree; not a regression of this upgrade)"
+    }
+  ]
+}
