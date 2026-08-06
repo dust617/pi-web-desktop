@@ -1,0 +1,1737 @@
+diff --git a/.tmp/pi-web-upstream/app/api/models/route.ts b/resources/pi-web/app/api/models/route.ts
+index 2fe8cf4..9f141d1 100644
+--- a/.tmp/pi-web-upstream/app/api/models/route.ts
++++ b/resources/pi-web/app/api/models/route.ts
+@@ -4,6 +4,7 @@ import { createAgentSessionServices, getAgentDir, type SettingsManager } from "@
+ import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+ import { loadModelsWithCache, withModelRuntimeError, type ModelsData } from "@/lib/models-cache";
+ import { resolveVisibleModels, selectInitialModelScope } from "@/lib/model-scope";
++import { withSafeModelLoadFailure } from "@/lib/model-load-response";
+ import { getAllowedFileRoots, isExistingFilePathAllowed } from "@/lib/file-access";
+ import { projectTrustReloadOptions } from "@/lib/project-trust";
+ 
+@@ -113,6 +114,6 @@ export async function GET(req: Request) {
+   try {
+     return Response.json(await loadModelsWithCache(cwd, () => loadModels(cwd)));
+   } catch {
+-    return Response.json(EMPTY_MODELS);
++    return Response.json(withSafeModelLoadFailure(EMPTY_MODELS));
+   }
+ }
+diff --git a/.tmp/pi-web-upstream/components/ChatInput.test.mjs b/resources/pi-web/components/ChatInput.test.mjs
+index f33519d..8ac98cc 100644
+--- a/.tmp/pi-web-upstream/components/ChatInput.test.mjs
++++ b/resources/pi-web/components/ChatInput.test.mjs
+@@ -9,7 +9,7 @@ const jiti = createJiti(import.meta.url, {
+   tsconfigPaths: true,
+ });
+ const { ChatInput, ModelErrorBanner, ModelScopeWarningBanner, canRestoreUserMessage, filterModelOptions, getUserMessageText, getUserMessageDraftImages } = await jiti.import("./ChatInput.tsx");
+-const { I18nProvider } = await jiti.import("../hooks/useI18n.tsx");
++const { I18nProvider } = await jiti.import("@/hooks/useI18n");
+ 
+ test("renders the upstream model error", () => {
+   const html = renderToStaticMarkup(
+diff --git a/.tmp/pi-web-upstream/components/MermaidBlock.test.mjs b/resources/pi-web/components/MermaidBlock.test.mjs
+index c0c00fb..f85a338 100644
+--- a/.tmp/pi-web-upstream/components/MermaidBlock.test.mjs
++++ b/resources/pi-web/components/MermaidBlock.test.mjs
+@@ -9,7 +9,7 @@ const jiti = createJiti(import.meta.url, {
+   tsconfigPaths: true,
+ });
+ const { MermaidBlock } = await jiti.import("./MermaidBlock.tsx");
+-const { I18nProvider } = await jiti.import("../hooks/useI18n.tsx");
++const { I18nProvider } = await jiti.import("@/hooks/useI18n");
+ 
+ // Simple sequenceDiagram for testing
+ const mermaidSrc = `sequenceDiagram
+diff --git a/.tmp/pi-web-upstream/components/MessageView.test.mjs b/resources/pi-web/components/MessageView.test.mjs
+index 9a70427..38e00ec 100644
+--- a/.tmp/pi-web-upstream/components/MessageView.test.mjs
++++ b/resources/pi-web/components/MessageView.test.mjs
+@@ -9,7 +9,7 @@ const jiti = createJiti(import.meta.url, {
+   tsconfigPaths: true,
+ });
+ const { MessageView, replaceUserMessageText } = await jiti.import("./MessageView.tsx");
+-const { I18nProvider } = await jiti.import("../hooks/useI18n.tsx");
++const { I18nProvider } = await jiti.import("@/hooks/useI18n");
+ 
+ function renderMessage(message) {
+   return renderToStaticMarkup(
+diff --git a/.tmp/pi-web-upstream/components/SessionSidebar.tsx b/resources/pi-web/components/SessionSidebar.tsx
+index 0514b55..e26b953 100644
+--- a/.tmp/pi-web-upstream/components/SessionSidebar.tsx
++++ b/resources/pi-web/components/SessionSidebar.tsx
+@@ -3,6 +3,8 @@
+ import { useEffect, useLayoutEffect, useState, useCallback, useRef, type CSSProperties, type ReactNode } from "react";
+ import type { SessionInfo } from "@/lib/types";
+ import { useI18n } from "@/hooks/useI18n";
++import { copyText } from "@/lib/clipboard";
++import { formatSessionCopyDetails } from "@/lib/session-copy";
+ import { DirectoryPicker } from "./DirectoryPicker";
+ import { FileExplorer, type FileExplorerHandle } from "./FileExplorer";
+ 
+@@ -426,6 +428,117 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
+   const explorerRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+   const fileExplorerRef = useRef<FileExplorerHandle>(null);
+ 
++  // Downstream extension boundary: the archive data/API and this menu are kept
++  // separate from upstream tree rendering, so a pi-web upgrade only needs this
++  // small adapter rather than a fork of session handling.
++  const [contextMenu, setContextMenu] = useState<{ session: SessionInfo; x: number; y: number } | null>(null);
++  const menuRef = useRef<HTMLDivElement>(null);
++  const [copiedToast, setCopiedToast] = useState(false);
++  const [archivedIds, setArchivedIds] = useState<Set<string>>(new Set());
++  const [showArchived, setShowArchived] = useState(false);
++  const [archiveBoxMenu, setArchiveBoxMenu] = useState<{ x: number; y: number } | null>(null);
++  const [clearArchiveConfirm, setClearArchiveConfirm] = useState(false);
++  const archiveBoxMenuRef = useRef<HTMLDivElement>(null);
++
++  useEffect(() => {
++    fetch("/api/archived-sessions")
++      .then((response) => response.ok ? response.json() : null)
++      .then((data) => { if (Array.isArray(data?.ids)) setArchivedIds(new Set(data.ids)); })
++      .catch(() => {});
++  }, []);
++
++  useEffect(() => {
++    if (!contextMenu) return;
++    const close = (event: MouseEvent) => {
++      if (!menuRef.current?.contains(event.target as Node)) setContextMenu(null);
++    };
++    const onKeyDown = (event: KeyboardEvent) => {
++      if (event.key === "Escape") setContextMenu(null);
++    };
++    document.addEventListener("mousedown", close);
++    document.addEventListener("keydown", onKeyDown);
++    return () => {
++      document.removeEventListener("mousedown", close);
++      document.removeEventListener("keydown", onKeyDown);
++    };
++  }, [contextMenu]);
++
++  useEffect(() => {
++    if (!archiveBoxMenu) return;
++    const close = (event: MouseEvent) => {
++      if (!archiveBoxMenuRef.current?.contains(event.target as Node)) {
++        setArchiveBoxMenu(null);
++        setClearArchiveConfirm(false);
++      }
++    };
++    const onKeyDown = (event: KeyboardEvent) => {
++      if (event.key === "Escape") {
++        setArchiveBoxMenu(null);
++        setClearArchiveConfirm(false);
++      }
++    };
++    document.addEventListener("mousedown", close);
++    document.addEventListener("keydown", onKeyDown);
++    return () => {
++      document.removeEventListener("mousedown", close);
++      document.removeEventListener("keydown", onKeyDown);
++    };
++  }, [archiveBoxMenu]);
++
++  const persistArchived = useCallback((ids: Set<string>) => {
++    setArchivedIds(ids);
++    void fetch("/api/archived-sessions", {
++      method: "PUT",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({ ids: [...ids] }),
++    }).catch(() => {});
++  }, []);
++
++  const collectDescendantIds = useCallback((rootId: string): string[] => {
++    const children = new Map<string, string[]>();
++    for (const session of allSessions) {
++      if (!session.parentSessionId) continue;
++      const ids = children.get(session.parentSessionId) ?? [];
++      ids.push(session.id);
++      children.set(session.parentSessionId, ids);
++    }
++    const ids: string[] = [];
++    const pending = [rootId];
++    while (pending.length) {
++      const id = pending.pop()!;
++      ids.push(id);
++      pending.push(...(children.get(id) ?? []));
++    }
++    return ids;
++  }, [allSessions]);
++
++  const handleArchive = useCallback((sessionId: string) => {
++    const next = new Set(archivedIds);
++    for (const id of collectDescendantIds(sessionId)) next.add(id);
++    persistArchived(next);
++    setContextMenu(null);
++  }, [archivedIds, collectDescendantIds, persistArchived]);
++
++  const handleUnarchive = useCallback((sessionId: string) => {
++    const next = new Set(archivedIds);
++    next.delete(sessionId);
++    persistArchived(next);
++    setContextMenu(null);
++  }, [archivedIds, persistArchived]);
++
++  const handleClearArchive = useCallback(() => {
++    persistArchived(new Set());
++    setArchiveBoxMenu(null);
++    setClearArchiveConfirm(false);
++  }, [persistArchived]);
++
++  const handleCopySessionDetails = useCallback((session: SessionInfo) => {
++    void copyText(formatSessionCopyDetails(session));
++    setContextMenu(null);
++    setCopiedToast(true);
++    setTimeout(() => setCopiedToast(false), 1800);
++  }, []);
++
+   const loadSessions = useCallback(async (showLoading = false) => {
+     try {
+       if (showLoading) setLoading(true);
+@@ -824,9 +937,13 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
+ 
+   // Sessions of every worktree in the selected project are shown together
+   const selectedProject = projectRootFor(selectedCwd);
+-  const filteredSessions = selectedProject
++  const projectSessions = selectedProject
+     ? allSessions.filter((s) => (s.projectRoot ?? s.cwd) === selectedProject)
+     : allSessions;
++  // Archive badges reflect the current project view (and only sessions that
++  // still exist), so switching projects can never show a stale global count.
++  const visibleArchivedCount = projectSessions.filter((s) => archivedIds.has(s.id)).length;
++  const filteredSessions = projectSessions.filter((session) => showArchived || !archivedIds.has(session.id));
+   const showWorktreeSwitcher = Boolean(
+     worktreeState?.isGit
+     && worktreeState.isTopLevel
+@@ -861,6 +978,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
+ 
+   return (
+     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
++      <style>{`@keyframes sidebarToastFade { 0%{opacity:0} 12%{opacity:1} 78%{opacity:1} 100%{opacity:0} }`}</style>
+       {customPathOpen && (
+         <DirectoryPicker
+           busy={customPathValidating}
+@@ -1509,6 +1627,45 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
+         )}
+       </div>
+ 
++      {/* Archive toggle */}
++      {visibleArchivedCount > 0 && (
++        <div
++          onContextMenu={(event) => {
++            event.preventDefault();
++            event.stopPropagation();
++            setContextMenu(null);
++            setClearArchiveConfirm(false);
++            setArchiveBoxMenu({
++              x: Math.max(8, Math.min(event.clientX, window.innerWidth - 220)),
++              y: Math.max(8, Math.min(event.clientY, window.innerHeight - 110)),
++            });
++          }}
++          style={{ position: "relative" }}
++        >
++          <button
++            onClick={() => setShowArchived((value) => !value)}
++            title="右键可清空归档箱"
++            style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 14px", background: "none", border: "none", borderBottom: "1px solid var(--border)", color: showArchived ? "var(--accent)" : "var(--text-muted)", fontSize: 11, cursor: "pointer", width: "100%", textAlign: "left" }}
++          >
++            <span>{showArchived ? "隐藏已归档" : "显示已归档"}（{visibleArchivedCount}）</span>
++            <span style={{ marginLeft: "auto", color: "var(--text-dim)", fontSize: 10 }}>右键⋯</span>
++          </button>
++          {archiveBoxMenu && (
++            <div ref={archiveBoxMenuRef} style={{ position: "fixed", left: archiveBoxMenu.x, top: archiveBoxMenu.y, zIndex: 10001, minWidth: 240, padding: "4px 0", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.18)" }}>
++              <button
++                onClick={() => {
++                  if (clearArchiveConfirm) handleClearArchive();
++                  else setClearArchiveConfirm(true);
++                }}
++                style={{ display: "block", width: "100%", padding: "8px 12px", background: "none", border: "none", color: clearArchiveConfirm ? "#ef4444" : "var(--text)", fontSize: 12, cursor: "pointer", textAlign: "left" }}
++              >
++                {clearArchiveConfirm ? `再次点击确认清空全部归档（${visibleArchivedCount}）` : "清空归档箱"}
++              </button>
++            </div>
++          )}
++        </div>
++      )}
++
+       {/* Session list */}
+       <div style={{ flex: explorerOpen && (selectedCwdProp || selectedCwd) ? "1 1 0" : "1 1 auto", overflowY: "auto", padding: "0", minHeight: 80 }}>
+         {loading && (
+@@ -1533,17 +1690,58 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
+             selectedSessionId={selectedSessionId}
+             runningSessionIds={runningSessionIds}
+             unreadSessionIds={unreadSessionIds}
++            archivedIds={archivedIds}
+             onSelectSession={handleSelectSessionFromList}
+             onRenamed={loadSessions}
+             onSessionDeleted={(id) => {
++              setContextMenu(null);
++              // Prune the deleted subtree's ids from the archive so deleted
++              // sessions cannot keep inflating the archive box / file.
++              const removed = new Set(collectDescendantIds(id));
++              const next = new Set(archivedIds);
++              let changed = false;
++              for (const did of removed) if (next.delete(did)) changed = true;
++              if (changed) persistArchived(next);
+               onSessionDeleted?.(id);
+               loadSessions();
+             }}
++            onContextMenu={(event, session) => {
++              event.preventDefault();
++              event.stopPropagation();
++              setContextMenu({
++                session,
++                x: Math.max(8, Math.min(event.clientX, window.innerWidth - 220)),
++                y: Math.max(8, Math.min(event.clientY, window.innerHeight - 110)),
++              });
++            }}
+             depth={0}
+           />
+         ))}
+       </div>
+ 
++      {contextMenu && (
++        <div ref={menuRef} style={{ position: "fixed", left: contextMenu.x, top: contextMenu.y, zIndex: 9999, minWidth: 205, padding: "4px 0", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.18)" }}>
++          <button
++            onClick={() => handleCopySessionDetails(contextMenu.session)}
++            style={{ display: "block", width: "100%", padding: "8px 12px", background: "none", border: "none", color: "var(--text)", fontSize: 12, cursor: "pointer", textAlign: "left" }}
++          >
++            复制会话 ID 和文件路径
++          </button>
++          <div style={{ height: 1, margin: "2px 8px", background: "var(--border)" }} />
++          <button
++            onClick={() => archivedIds.has(contextMenu.session.id) ? handleUnarchive(contextMenu.session.id) : handleArchive(contextMenu.session.id)}
++            style={{ display: "block", width: "100%", padding: "8px 12px", background: "none", border: "none", color: "var(--text)", fontSize: 12, cursor: "pointer", textAlign: "left" }}
++          >
++            {archivedIds.has(contextMenu.session.id) ? "取消归档" : "归档会话及其分支"}
++          </button>
++        </div>
++      )}
++      {copiedToast && (
++        <div style={{ position: "fixed", left: "50%", top: "50%", transform: "translate(-50%, -50%)", zIndex: 10000, padding: "10px 20px", borderRadius: 10, background: "rgba(0,0,0,0.82)", color: "#fff", fontSize: 13, pointerEvents: "none", animation: "sidebarToastFade 1.8s ease forwards", whiteSpace: "nowrap" }}>
++          ✓ 已复制会话 ID 和文件路径
++        </div>
++      )}
++
+       {/* File Explorer section */}
+       {(selectedCwdProp || selectedCwd) && (
+         <div
+@@ -1666,18 +1864,22 @@ function SessionTreeItem({
+   selectedSessionId,
+   runningSessionIds,
+   unreadSessionIds,
++  archivedIds,
+   onSelectSession,
+   onRenamed,
+   onSessionDeleted,
++  onContextMenu,
+   depth,
+ }: {
+   node: SessionTreeNode;
+   selectedSessionId: string | null;
+   runningSessionIds: Set<string>;
+   unreadSessionIds: Set<string>;
++  archivedIds: Set<string>;
+   onSelectSession: (s: SessionInfo) => void;
+   onRenamed?: () => void;
+   onSessionDeleted?: (id: string) => void;
++  onContextMenu: (event: React.MouseEvent, session: SessionInfo) => void;
+   depth: number;
+ }) {
+   const [collapsed, setCollapsed] = useState(false);
+@@ -1702,9 +1904,11 @@ function SessionTreeItem({
+           isSelected={node.session.id === selectedSessionId}
+           isRunning={runningSessionIds.has(node.session.id)}
+           isUnread={unreadSessionIds.has(node.session.id)}
++          isArchived={archivedIds.has(node.session.id)}
+           onClick={() => onSelectSession(node.session)}
+           onRenamed={onRenamed}
+           onDeleted={(id) => onSessionDeleted?.(id)}
++          onContextMenu={onContextMenu}
+           depth={depth}
+           hasChildren={hasChildren}
+           collapsed={collapsed}
+@@ -1720,9 +1924,11 @@ function SessionTreeItem({
+               selectedSessionId={selectedSessionId}
+               runningSessionIds={runningSessionIds}
+               unreadSessionIds={unreadSessionIds}
++              archivedIds={archivedIds}
+               onSelectSession={onSelectSession}
+               onRenamed={onRenamed}
+               onSessionDeleted={onSessionDeleted}
++              onContextMenu={onContextMenu}
+               depth={depth + 1}
+             />
+           ))}
+@@ -1802,9 +2008,11 @@ function SessionItem({
+   isSelected,
+   isRunning,
+   isUnread,
++  isArchived,
+   onClick,
+   onRenamed,
+   onDeleted,
++  onContextMenu,
+   depth = 0,
+   hasChildren = false,
+   collapsed = false,
+@@ -1814,9 +2022,11 @@ function SessionItem({
+   isSelected: boolean;
+   isRunning?: boolean;
+   isUnread?: boolean;
++  isArchived?: boolean;
+   onClick: () => void;
+   onRenamed?: () => void;
+   onDeleted?: (id: string) => void;
++  onContextMenu?: (event: React.MouseEvent, session: SessionInfo) => void;
+   depth?: number;
+   hasChildren?: boolean;
+   collapsed?: boolean;
+@@ -1891,6 +2101,10 @@ function SessionItem({
+   return (
+     <div
+       onClick={confirmDelete || renaming ? undefined : onClick}
++      onContextMenu={(event) => {
++        if (confirmDelete || renaming) return;
++        onContextMenu?.(event, session);
++      }}
+       onMouseEnter={() => setHovered(true)}
+       onMouseLeave={() => { setHovered(false); }}
+       style={{
+@@ -1907,7 +2121,7 @@ function SessionItem({
+           ? "2px solid #ef4444"
+           : isSelected ? "2px solid var(--accent)" : "2px solid transparent",
+         transition: "background 0.1s",
+-        opacity: deleting ? 0.5 : 1,
++        opacity: deleting ? 0.5 : isArchived ? 0.55 : 1,
+         gap: 6,
+         overflow: "hidden",
+       }}
+diff --git a/.tmp/pi-web-upstream/hooks/useAgentSession.ts b/resources/pi-web/hooks/useAgentSession.ts
+index 43f5f60..754f9a0 100644
+--- a/.tmp/pi-web-upstream/hooks/useAgentSession.ts
++++ b/resources/pi-web/hooks/useAgentSession.ts
+@@ -12,6 +12,7 @@ import type {
+ import { normalizeToolCalls } from "@/lib/normalize";
+ import { sendAgentCommand } from "@/lib/agent-client";
+ import { getToolNamesForPreset, type ToolEntry } from "@/lib/tool-presets";
++import { getPromptFailureRecovery } from "@/lib/prompt-failure";
+ import type { SessionStatsInfo } from "@/lib/pi-types";
+ 
+ export interface SessionData {
+@@ -401,6 +402,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
+   const lastUserMsgRef = useRef<HTMLDivElement | null>(null);
+   const pendingScrollToUserRef = useRef(false);
+   const completionScrollAllowedRef = useRef(true);
++  const pendingCompactionScrollRef = useRef(false);
+   const isNearBottomRef = useRef(true);
+   const liveFollowFrameRef = useRef<number | null>(null);
+   const executeBashRef = useRef<(command: string, excludeFromContext: boolean) => Promise<void> | undefined>(undefined);
+@@ -1230,7 +1232,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
+           setCompactResult(null);
+         } else if (!event.aborted) {
+           setCompactResult(readCompactResult(event.result, (event.reason as string | undefined) ?? "auto"));
+-          if (sessionIdRef.current) loadSession(sessionIdRef.current);
++          pendingCompactionScrollRef.current = completionScrollAllowedRef.current;
++          if (sessionIdRef.current) void loadSession(sessionIdRef.current);
+         }
+         break;
+       case "extension_ui_request":
+@@ -1330,7 +1333,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
+       rpcPromptPendingRef.current = false;
+       agentRunningRef.current = false;
+       closeEvents();
+-      if (e instanceof EventStreamConnectionError) {
++      const recovery = getPromptFailureRecovery(e instanceof EventStreamConnectionError);
++      if (recovery.definitelyNotSent) {
+         const optimisticKey = optimisticUserMessageKeyRef.current;
+         if (optimisticKey) {
+           setMessages((prev) => {
+@@ -1340,7 +1344,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
+               : prev;
+           });
+         }
+-        addNotice({ type: "error", message: e.message });
++        addNotice({ type: "error", message: e instanceof Error ? e.message : String(e) });
+         // The prompt never reached the agent, so restore the user's text into
+         // the input instead of losing it. Mirrors the shell-command recovery in
+         // executeBash; insertIfEmpty avoids clobbering anything typed since.
+@@ -1474,6 +1478,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
+     try {
+       const result = await sendAgentCommand<CompactCommandResult>(sid, { type: "compact" });
+       setCompactResult(readCompactResult(result, "manual"));
++      pendingCompactionScrollRef.current = completionScrollAllowedRef.current;
+       await loadSession(sid, true);
+     } catch (e) {
+       setCompactError(e instanceof Error ? e.message : String(e));
+@@ -1831,7 +1836,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
+ 
+   useLayoutEffect(() => {
+     if (messages.length > 0) {
+-      if (pendingScrollToUserRef.current) {
++      if (pendingCompactionScrollRef.current) {
++        pendingCompactionScrollRef.current = false;
++        if (completionScrollAllowedRef.current) {
++          initialScrollDoneRef.current = true;
++          scrollToBottom("instant");
++        }
++      } else if (pendingScrollToUserRef.current) {
+         pendingScrollToUserRef.current = false;
+         initialScrollDoneRef.current = true;
+         scrollUserMsgToTop();
+diff --git a/resources/pi-web/lib/empty-abort-retry.test.mjs b/resources/pi-web/lib/empty-abort-retry.test.mjs
+new file mode 100644
+index 0000000..6d68a68
+--- /dev/null
++++ b/resources/pi-web/lib/empty-abort-retry.test.mjs
+@@ -0,0 +1,335 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
++import { createJiti } from "jiti";
++
++const jiti = createJiti(import.meta.url);
++const { isRetryableEmptyAbort, withEmptyAbortRetries } = await jiti.import("./empty-abort-retry.ts");
++
++function message(stopReason, content = [], totalTokens = 0) {
++  return {
++    role: "assistant",
++    content,
++    api: "test",
++    provider: "test",
++    model: "test",
++    usage: {
++      input: 0,
++      output: 0,
++      cacheRead: 0,
++      cacheWrite: 0,
++      totalTokens,
++      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
++    },
++    stopReason,
++    timestamp: Date.now(),
++  };
++}
++
++function streamEvents(events) {
++  const stream = createAssistantMessageEventStream();
++  queueMicrotask(() => {
++    for (const event of events) stream.push(event);
++    stream.end();
++  });
++  return stream;
++}
++
++async function collect(stream) {
++  const events = [];
++  for await (const event of stream) events.push(event);
++  return { events, result: await stream.result() };
++}
++
++const start = { type: "start", partial: { ...message("pending"), stopReason: "pending" } };
++const emptyAbort = { type: "error", reason: "aborted", error: message("aborted") };
++const done = { type: "done", reason: "stop", message: message("stop", [{ type: "text", text: "ok" }], 3) };
++const noDelay = { retryDelayMs: 0 };
++
++test("retries an empty provider abort and exposes only the successful terminal", async () => {
++  let retries = 0;
++  const observed = [];
++  const output = withEmptyAbortRetries(
++    streamEvents([start, emptyAbort]),
++    () => {
++      retries += 1;
++      return streamEvents([start, done]);
++    },
++    undefined,
++    (event, details) => observed.push({ event, details }),
++    noDelay,
++  );
++
++  const { events, result } = await collect(output);
++  assert.equal(retries, 1);
++  assert.deepEqual(events.map((event) => event.type), ["start", "done"]);
++  assert.equal(result.stopReason, "stop");
++  assert.deepEqual(observed.map((item) => item.event), ["scheduled", "started", "succeeded"]);
++  assert.equal(observed[0].details.nextAttempt, 2);
++  assert.equal(observed[2].details.attempt, 2);
++});
++
++test("does not retry a real AbortSignal cancellation", async () => {
++  const controller = new AbortController();
++  controller.abort();
++  let retries = 0;
++  const output = withEmptyAbortRetries(
++    streamEvents([start, emptyAbort]),
++    () => { retries += 1; return streamEvents([start, done]); },
++    controller.signal,
++    undefined,
++    noDelay,
++  );
++
++  const { events, result } = await collect(output);
++  assert.equal(retries, 0);
++  assert.deepEqual(events.map((event) => event.type), ["start", "error"]);
++  assert.equal(result.stopReason, "aborted");
++});
++
++test("does not retry after substantive provider output", async () => {
++  let retries = 0;
++  const textStart = {
++    type: "text_start",
++    contentIndex: 0,
++    partial: { ...start.partial, content: [{ type: "text", text: "" }] },
++  };
++  const textDelta = {
++    type: "text_delta",
++    contentIndex: 0,
++    delta: "x",
++    partial: { ...start.partial, content: [{ type: "text", text: "x" }] },
++  };
++  const output = withEmptyAbortRetries(
++    streamEvents([start, textStart, textDelta, emptyAbort]),
++    () => { retries += 1; return streamEvents([start, done]); },
++    undefined,
++    undefined,
++    noDelay,
++  );
++
++  const { events } = await collect(output);
++  assert.equal(retries, 0);
++  assert.deepEqual(events.map((event) => event.type), ["start", "text_start", "text_delta", "error"]);
++});
++
++test("discards empty text/thinking boundary events before retry", async () => {
++  let retries = 0;
++  const textStart = {
++    type: "text_start",
++    contentIndex: 0,
++    partial: { ...start.partial, content: [{ type: "text", text: "" }] },
++  };
++  const thinkingStart = {
++    type: "thinking_start",
++    contentIndex: 0,
++    partial: { ...start.partial, content: [{ type: "thinking", thinking: "" }] },
++  };
++  const output = withEmptyAbortRetries(
++    streamEvents([start, textStart, thinkingStart, emptyAbort]),
++    () => { retries += 1; return streamEvents([start, done]); },
++    undefined,
++    undefined,
++    noDelay,
++  );
++
++  const { events, result } = await collect(output);
++  assert.equal(retries, 1);
++  assert.deepEqual(events.map((event) => event.type), ["start", "done"]);
++  assert.equal(result.stopReason, "stop");
++});
++
++test("does not retry when the start partial already contains output", async () => {
++  let retries = 0;
++  const nonemptyStart = {
++    type: "start",
++    partial: { ...start.partial, content: [{ type: "text", text: "partial" }] },
++  };
++  const output = withEmptyAbortRetries(
++    streamEvents([nonemptyStart, emptyAbort]),
++    () => { retries += 1; return streamEvents([start, done]); },
++    undefined,
++    undefined,
++    noDelay,
++  );
++
++  const { events } = await collect(output);
++  assert.equal(retries, 0);
++  assert.deepEqual(events.map((event) => event.type), ["start", "error"]);
++});
++
++test("requires zero usage and empty content", () => {
++  const nonzero = { ...emptyAbort, error: message("aborted", [], 1) };
++  const content = { ...emptyAbort, error: message("aborted", [{ type: "text", text: "partial" }], 0) };
++  assert.equal(isRetryableEmptyAbort(nonzero, undefined, false), false);
++  assert.equal(isRetryableEmptyAbort(content, undefined, false), false);
++  assert.equal(isRetryableEmptyAbort(emptyAbort, undefined, false), true);
++});
++
++test("uses a second retry after two consecutive empty aborts", async () => {
++  let retries = 0;
++  const observed = [];
++  const output = withEmptyAbortRetries(
++    streamEvents([start, emptyAbort]),
++    () => {
++      retries += 1;
++      return retries === 1 ? streamEvents([start, emptyAbort]) : streamEvents([start, done]);
++    },
++    undefined,
++    (event) => observed.push(event),
++    noDelay,
++  );
++
++  const { events, result } = await collect(output);
++  assert.equal(retries, 2);
++  assert.deepEqual(events.map((event) => event.type), ["start", "done"]);
++  assert.equal(result.stopReason, "stop");
++  assert.deepEqual(observed, ["scheduled", "started", "scheduled", "started", "succeeded"]);
++});
++
++test("forwards the third abort after exhausting two retries", async () => {
++  let retries = 0;
++  const observed = [];
++  const output = withEmptyAbortRetries(
++    streamEvents([start, emptyAbort]),
++    () => { retries += 1; return streamEvents([start, emptyAbort]); },
++    undefined,
++    (event) => observed.push(event),
++    noDelay,
++  );
++
++  const { events, result } = await collect(output);
++  assert.equal(retries, 2);
++  assert.deepEqual(events.map((event) => event.type), ["start", "error"]);
++  assert.equal(result.stopReason, "aborted");
++  assert.deepEqual(observed, ["scheduled", "started", "scheduled", "started", "failed"]);
++});
++
++test("restores the current abort if retry setup throws", async () => {
++  const observed = [];
++  const output = withEmptyAbortRetries(
++    streamEvents([start, emptyAbort]),
++    () => { throw new Error("setup failed"); },
++    undefined,
++    (event) => observed.push(event),
++    noDelay,
++  );
++
++  const { events, result } = await collect(output);
++  assert.deepEqual(events.map((event) => event.type), ["start", "error"]);
++  assert.equal(result.stopReason, "aborted");
++  assert.deepEqual(observed, ["scheduled", "started", "setup_failed"]);
++});
++
++test("settles with a synthetic error if a custom iterator throws", async () => {
++  const throwing = {
++    async *[Symbol.asyncIterator]() {
++      yield start;
++      throw new Error("iterator failed");
++    },
++  };
++  const output = withEmptyAbortRetries(throwing, () => streamEvents([start, done]), undefined, undefined, noDelay);
++  const { events, result } = await collect(output);
++  assert.deepEqual(events.map((event) => event.type), ["start", "error"]);
++  assert.equal(result.stopReason, "error");
++});
++
++// ── thinking-only 缓冲（2026-08-05 覆盖缺口修复）──────────────────────
++
++function thinkingPartial(text) {
++  return { ...start.partial, content: [{ type: "thinking", thinking: text }] };
++}
++const thinkingStart = { type: "thinking_start", contentIndex: 0, partial: thinkingPartial("") };
++const thinkingDelta = (text) => ({ type: "thinking_delta", contentIndex: 0, delta: text, partial: thinkingPartial(text) });
++
++test("retries a thinking-only abort and never forwards the discarded thinking", async () => {
++  let retries = 0;
++  const observed = [];
++  const output = withEmptyAbortRetries(
++    streamEvents([start, thinkingStart, thinkingDelta("hmm..."), emptyAbort]),
++    () => { retries += 1; return streamEvents([start, done]); },
++    undefined,
++    (event, details) => observed.push({ event, details }),
++    noDelay,
++  );
++
++  const { events, result } = await collect(output);
++  assert.equal(retries, 1);
++  assert.deepEqual(events.map((event) => event.type), ["start", "done"]);
++  assert.equal(result.stopReason, "stop");
++  assert.equal(observed[0].event, "scheduled");
++  assert.equal(observed[0].details.bufferedThinkingBytes, "hmm...".length);
++});
++
++test("commits and skips retry once the thinking buffer cap is exceeded", async () => {
++  let retries = 0;
++  const output = withEmptyAbortRetries(
++    streamEvents([start, thinkingStart, thinkingDelta("12345"), emptyAbort]),
++    () => { retries += 1; return streamEvents([start, done]); },
++    undefined,
++    undefined,
++    { ...noDelay, thinkingBufferCapBytes: 4 },
++  );
++
++  const { events } = await collect(output);
++  assert.equal(retries, 0);
++  assert.deepEqual(events.map((event) => event.type), ["start", "thinking_start", "thinking_delta", "error"]);
++});
++
++test("drops buffered thinking on final failure after exhausting retries", async () => {
++  let retries = 0;
++  const output = withEmptyAbortRetries(
++    streamEvents([start, thinkingStart, thinkingDelta("abc"), emptyAbort]),
++    () => { retries += 1; return streamEvents([start, thinkingStart, thinkingDelta("abc"), emptyAbort]); },
++    undefined,
++    undefined,
++    noDelay,
++  );
++
++  const { events, result } = await collect(output);
++  assert.equal(retries, 2);
++  assert.deepEqual(events.map((event) => event.type), ["start", "thinking_start", "error"]);
++  assert.equal(events.some((event) => event.type === "thinking_delta"), false);
++  assert.equal(result.stopReason, "aborted");
++});
++
++test("does not retry after redacted thinking (non-regenerable)", async () => {
++  let retries = 0;
++  const redactedStart = {
++    type: "thinking_start",
++    contentIndex: 0,
++    partial: { ...start.partial, content: [{ type: "thinking", redacted: true }] },
++  };
++  const output = withEmptyAbortRetries(
++    streamEvents([start, redactedStart, emptyAbort]),
++    () => { retries += 1; return streamEvents([start, done]); },
++    undefined,
++    undefined,
++    noDelay,
++  );
++
++  const { events } = await collect(output);
++  assert.equal(retries, 0);
++  assert.deepEqual(events.map((event) => event.type), ["start", "thinking_start", "error"]);
++});
++
++test("still commits immediately when text follows thinking", async () => {
++  let retries = 0;
++  const textDelta = {
++    type: "text_delta",
++    contentIndex: 1,
++    delta: "answer",
++    partial: { ...thinkingPartial("hmm"), content: [...thinkingPartial("hmm").content, { type: "text", text: "answer" }] },
++  };
++  const output = withEmptyAbortRetries(
++    streamEvents([start, thinkingStart, thinkingDelta("hmm"), textDelta, emptyAbort]),
++    () => { retries += 1; return streamEvents([start, done]); },
++    undefined,
++    undefined,
++    noDelay,
++  );
++
++  const { events } = await collect(output);
++  assert.equal(retries, 0);
++  assert.deepEqual(events.map((event) => event.type), ["start", "thinking_start", "thinking_delta", "text_delta", "error"]);
++});
+diff --git a/resources/pi-web/lib/empty-abort-retry.ts b/resources/pi-web/lib/empty-abort-retry.ts
+new file mode 100644
+index 0000000..6f95112
+--- /dev/null
++++ b/resources/pi-web/lib/empty-abort-retry.ts
+@@ -0,0 +1,355 @@
++import { createAssistantMessageEventStream, type AssistantMessageEventStream } from "@earendil-works/pi-ai";
++
++type StreamEvent = {
++  type?: unknown;
++  reason?: unknown;
++  error?: unknown;
++  message?: unknown;
++  partial?: unknown;
++  delta?: unknown;
++  content?: unknown;
++  [key: string]: unknown;
++};
++
++export type EmptyAbortRetryStream = AsyncIterable<StreamEvent> & {
++  result?: () => Promise<unknown>;
++};
++
++export type EmptyAbortRetryEvent =
++  | "scheduled"
++  | "started"
++  | "succeeded"
++  | "failed"
++  | "cancelled"
++  | "setup_failed";
++
++export type EmptyAbortRetryObserver = (
++  event: EmptyAbortRetryEvent,
++  details?: Record<string, unknown>,
++) => void;
++
++export interface EmptyAbortRetryOptions {
++  retryDelayMs?: number;
++  maxRetries?: number;
++  /**
++   * Max bytes of plain thinking content buffered as discardable before the
++   * stream is committed (forwarded live, retry disabled). Bounds memory and
++   * avoids discarding very large reasoning. Default 64 KiB.
++   */
++  thinkingBufferCapBytes?: number;
++}
++
++function messageView(value: unknown): Record<string, unknown> | undefined {
++  return value && typeof value === "object" ? value as Record<string, unknown> : undefined;
++}
++
++function contentPartHasOutput(value: unknown): boolean {
++  const part = messageView(value);
++  if (!part) return true;
++  if (part.type === "text") return typeof part.text === "string" && part.text.length > 0;
++  if (part.type === "thinking") {
++    return (typeof part.thinking === "string" && part.thinking.length > 0)
++      || part.redacted === true
++      || (typeof part.thinkingSignature === "string" && part.thinkingSignature.length > 0);
++  }
++  // A tool-call block can lead to an externally visible tool execution, so it
++  // is always treated as committed output even if its arguments are incomplete.
++  if (part.type === "toolCall") return true;
++  return true;
++}
++
++function messageHasOutput(value: Record<string, unknown> | undefined): boolean {
++  const usage = messageView(value?.usage);
++  return (Array.isArray(value?.content) && value.content.some(contentPartHasOutput))
++    || (typeof usage?.totalTokens === "number" && usage.totalTokens > 0);
++}
++
++const DEFAULT_THINKING_BUFFER_CAP_BYTES = 64 * 1024;
++
++/**
++ * A plain thinking part carries regenerable reasoning text. Redacted thinking
++ * and signed thinking blocks cannot be regenerated, so they count as
++ * committed output.
++ */
++function partIsPlainThinking(value: unknown): boolean {
++  const part = messageView(value);
++  if (!part || part.type !== "thinking") return false;
++  if (part.redacted === true) return false;
++  if (typeof part.thinkingSignature === "string" && part.thinkingSignature.length > 0) return false;
++  return typeof part.thinking === "string";
++}
++
++function partialIsPlainThinkingOnly(value: Record<string, unknown> | undefined): boolean {
++  if (!value) return false;
++  const usage = messageView(value.usage);
++  if (typeof usage?.totalTokens === "number" && usage.totalTokens > 0) return false;
++  if (!Array.isArray(value.content) || value.content.length === 0) return false;
++  return value.content.every(partIsPlainThinking);
++}
++
++type EventVerdict = "structural" | "thinking" | "commit";
++
++/**
++ * Classify a provider stream event for retry safety:
++ * - "structural": empty boundary event, always safe to buffer and discard
++ * - "thinking":   plain thinking content, safe to discard up to the cap
++ * - "commit":     real output (text, tool calls, usage, opaque events);
++ *                 forwarding it disables retry
++ */
++function classifyEvent(event: StreamEvent, partial: Record<string, unknown> | undefined): EventVerdict {
++  switch (event.type) {
++    case "start":
++    case "thinking_start":
++      if (!messageHasOutput(partial)) return "structural";
++      return partialIsPlainThinkingOnly(partial) ? "thinking" : "commit";
++    case "text_start":
++      return messageHasOutput(partial) ? "commit" : "structural";
++    case "thinking_delta": {
++      if (typeof event.delta !== "string" || event.delta.length === 0) {
++        return messageHasOutput(partial) ? "commit" : "structural";
++      }
++      return !partial || partialIsPlainThinkingOnly(partial) ? "thinking" : "commit";
++    }
++    case "text_delta":
++      return (typeof event.delta === "string" && event.delta.length > 0) || messageHasOutput(partial)
++        ? "commit"
++        : "structural";
++    case "thinking_end": {
++      if (typeof event.content !== "string" || event.content.length === 0) {
++        return messageHasOutput(partial) ? "commit" : "structural";
++      }
++      return !partial || partialIsPlainThinkingOnly(partial) ? "thinking" : "commit";
++    }
++    case "text_end":
++      return (typeof event.content === "string" && event.content.length > 0) || messageHasOutput(partial)
++        ? "commit"
++        : "structural";
++    case "toolcall_start":
++    case "toolcall_delta":
++    case "toolcall_end":
++      return "commit";
++    default:
++      // Unknown provider events are forwarded conservatively and disable retry.
++      return "commit";
++  }
++}
++
++function thinkingEventByteSize(event: StreamEvent): number {
++  if (typeof event.delta === "string") return event.delta.length;
++  if (typeof event.content === "string") return event.content.length;
++  return 0;
++}
++
++function hasThinkingContent(event: StreamEvent): boolean {
++  return (
++    (event.type === "thinking_delta" && typeof event.delta === "string" && event.delta.length > 0) ||
++    (event.type === "thinking_end" && typeof event.content === "string" && event.content.length > 0)
++  );
++}
++
++export function isRetryableEmptyAbort(
++  event: StreamEvent,
++  signal: AbortSignal | undefined,
++  outputCommitted: boolean,
++): boolean {
++  if (outputCommitted || signal?.aborted || event.type !== "error" || event.reason !== "aborted") return false;
++  const message = messageView(event.error);
++  const usage = messageView(message?.usage);
++  return message?.stopReason === "aborted"
++    && Array.isArray(message.content)
++    && message.content.length === 0
++    && usage?.totalTokens === 0;
++}
++
++function terminalSummary(event: StreamEvent): Record<string, unknown> {
++  const message = messageView(event.type === "error" ? event.error : event.message);
++  return {
++    streamEventType: typeof event.type === "string" ? event.type : "unknown",
++    ...(typeof event.reason === "string" ? { reason: event.reason } : {}),
++    ...(typeof message?.stopReason === "string" ? { stopReason: message.stopReason } : {}),
++  };
++}
++
++function pushEvent(output: AssistantMessageEventStream, event: StreamEvent): void {
++  output.push(event as Parameters<AssistantMessageEventStream["push"]>[0]);
++}
++
++function flushEvents(output: AssistantMessageEventStream, events: StreamEvent[], dropThinkingContent = false): void {
++  for (const event of events) {
++    if (dropThinkingContent && hasThinkingContent(event)) continue;
++    pushEvent(output, event as Parameters<AssistantMessageEventStream["push"]>[0]);
++  }
++  events.length = 0;
++}
++
++function finishWithEvent(
++  output: AssistantMessageEventStream,
++  pendingEvents: StreamEvent[],
++  event: StreamEvent,
++): void {
++  // Cancelled / setup-failed paths never earned the buffered thinking content.
++  flushEvents(output, pendingEvents, true);
++  pushEvent(output, event);
++  output.end();
++}
++
++function syntheticStreamError(partial: Record<string, unknown> | undefined): StreamEvent {
++  const usage = messageView(partial?.usage) ?? {
++    input: 0,
++    output: 0,
++    cacheRead: 0,
++    cacheWrite: 0,
++    totalTokens: 0,
++    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
++  };
++  return {
++    type: "error",
++    reason: "error",
++    error: {
++      role: "assistant",
++      content: Array.isArray(partial?.content) ? partial.content : [],
++      api: typeof partial?.api === "string" ? partial.api : "unknown",
++      provider: typeof partial?.provider === "string" ? partial.provider : "unknown",
++      model: typeof partial?.model === "string" ? partial.model : "unknown",
++      usage,
++      stopReason: "error",
++      errorMessage: "Provider stream ended without a terminal result.",
++      timestamp: Date.now(),
++    },
++  };
++}
++
++/**
++ * Hide provider-generated empty aborted terminals and retry the identical
++ * request up to maxRetries times. Structural text/thinking boundary events are
++ * buffered until real output arrives, so an empty aborted attempt remains safe
++ * to discard. Plain thinking content is likewise buffered (up to
++ * thinkingBufferCapBytes) because a thinking-only attempt has no user-visible
++ * output and no side effects; exceeding the cap commits the stream and
++ * disables retry. Text content, tool-call events, non-zero usage, real
++ * cancellation and non-aborted failures are never retried.
++ */
++export function withEmptyAbortRetries(
++  firstStream: EmptyAbortRetryStream,
++  retryFactory: () => EmptyAbortRetryStream | Promise<EmptyAbortRetryStream>,
++  signal?: AbortSignal,
++  observer?: EmptyAbortRetryObserver,
++  options: EmptyAbortRetryOptions = {},
++): AssistantMessageEventStream {
++  const output = createAssistantMessageEventStream();
++  const retryDelayMs = Math.max(0, options.retryDelayMs ?? 250);
++  const maxRetries = Math.max(0, Math.floor(options.maxRetries ?? 2));
++  const thinkingCapBytes = Math.max(
++    0,
++    Math.floor(options.thinkingBufferCapBytes ?? DEFAULT_THINKING_BUFFER_CAP_BYTES),
++  );
++  let originalAbortEvent: StreamEvent | undefined;
++  let latestPartial: Record<string, unknown> | undefined;
++  let pendingEvents: StreamEvent[] = [];
++  let anyOutputForwarded = false;
++
++  void (async () => {
++    let source = firstStream;
++    let attempt = 1;
++
++    while (true) {
++      pendingEvents = [];
++      let outputCommitted = false;
++      let switchedToRetry = false;
++      let bufferedThinkingBytes = 0;
++
++      for await (const event of source) {
++        const partial = messageView(event.partial);
++        if (partial) latestPartial = partial;
++
++        if (event.type === "done" || event.type === "error") {
++          if (attempt <= maxRetries && isRetryableEmptyAbort(event, signal, outputCommitted)) {
++            originalAbortEvent ??= event;
++            const nextAttempt = attempt + 1;
++            // A short stepped delay avoids immediately re-entering the same
++            // transient transport state: 250ms, then 750ms by default.
++            const delayMs = retryDelayMs * (2 * attempt - 1);
++            observer?.("scheduled", { ...terminalSummary(event), attempt, nextAttempt, delayMs, bufferedThinkingBytes });
++            if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
++            if (signal?.aborted) {
++              observer?.("cancelled", { attempt, nextAttempt, signalAborted: true });
++              finishWithEvent(output, pendingEvents, event);
++              return;
++            }
++            try {
++              observer?.("started", { attempt: nextAttempt });
++              source = await retryFactory();
++              attempt = nextAttempt;
++              switchedToRetry = true;
++              break;
++            } catch {
++              observer?.("setup_failed", { attempt: nextAttempt });
++              finishWithEvent(output, pendingEvents, event);
++              return;
++            }
++          }
++
++          // On a final failed attempt drop buffered thinking content so the
++          // visible outcome matches the pre-fix empty aborted shape; a
++          // successful terminal keeps the buffered events of its own attempt.
++          flushEvents(output, pendingEvents, event.type === "error");
++          pushEvent(output, event);
++          if (attempt > 1) {
++            observer?.(event.type === "done" ? "succeeded" : "failed", {
++              ...terminalSummary(event),
++              attempt,
++            });
++          }
++          output.end();
++          return;
++        }
++
++        const verdict = classifyEvent(event, partial);
++        if (verdict === "structural") {
++          pendingEvents.push(event);
++          continue;
++        }
++        if (verdict === "thinking") {
++          bufferedThinkingBytes += thinkingEventByteSize(event);
++          if (bufferedThinkingBytes <= thinkingCapBytes) {
++            pendingEvents.push(event);
++            continue;
++          }
++          // Cap exceeded: commit everything and forward live from here on.
++        }
++
++        flushEvents(output, pendingEvents);
++        pushEvent(output, event);
++        outputCommitted = true;
++        anyOutputForwarded = true;
++      }
++
++      if (switchedToRetry) continue;
++
++      // A conforming provider emits done/error. Preserve an explicit result if
++      // a custom stream instead ends without a terminal event.
++      const result = typeof source.result === "function" ? await source.result() : undefined;
++      flushEvents(output, pendingEvents);
++      if (result !== undefined) {
++        output.end(result as Parameters<AssistantMessageEventStream["end"]>[0]);
++      } else {
++        pushEvent(output, syntheticStreamError(latestPartial));
++        output.end();
++      }
++      return;
++    }
++  })().catch(() => {
++    // Keep the stream contract settled even if a custom iterator throws. If no
++    // output escaped, restore the first suppressed terminal instead of hanging.
++    flushEvents(output, pendingEvents, true);
++    if (originalAbortEvent && !anyOutputForwarded) {
++      pushEvent(output, originalAbortEvent);
++      output.end();
++      return;
++    }
++    pushEvent(output, syntheticStreamError(latestPartial));
++    output.end();
++  });
++
++  return output;
++}
+diff --git a/resources/pi-web/lib/model-load-response.test.mjs b/resources/pi-web/lib/model-load-response.test.mjs
+new file mode 100644
+index 0000000..3d42f27
+--- /dev/null
++++ b/resources/pi-web/lib/model-load-response.test.mjs
+@@ -0,0 +1,15 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++
++async function loadSubject() {
++  return import("./model-load-response.ts");
++}
++
++test("returns a safe model-load error without preserving raw failure text", async () => {
++  const { MODEL_LOAD_FAILURE_MESSAGE, withSafeModelLoadFailure } = await loadSubject();
++  const result = withSafeModelLoadFailure({
++    models: {}, modelList: [], defaultModel: null, thinkingLevels: {}, thinkingLevelMaps: {},
++  });
++  assert.equal(result.modelError, MODEL_LOAD_FAILURE_MESSAGE);
++  assert.equal(JSON.stringify(result).includes("secret path or token"), false);
++});
+diff --git a/resources/pi-web/lib/model-load-response.ts b/resources/pi-web/lib/model-load-response.ts
+new file mode 100644
+index 0000000..3fb2a98
+--- /dev/null
++++ b/resources/pi-web/lib/model-load-response.ts
+@@ -0,0 +1,8 @@
++import type { ModelsData } from "./models-cache";
++
++export const MODEL_LOAD_FAILURE_MESSAGE = "模型列表暂时不可用，请检查配置后重试。";
++
++/** Keep server-side model/config failures actionable without exposing details. */
++export function withSafeModelLoadFailure(data: ModelsData): ModelsData {
++  return { ...data, modelError: MODEL_LOAD_FAILURE_MESSAGE };
++}
+diff --git a/resources/pi-web/lib/prompt-failure.test.mjs b/resources/pi-web/lib/prompt-failure.test.mjs
+new file mode 100644
+index 0000000..0e9f970
+--- /dev/null
++++ b/resources/pi-web/lib/prompt-failure.test.mjs
+@@ -0,0 +1,18 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++
++async function loadSubject() {
++  return import("./prompt-failure.ts");
++}
++
++test("only a known event-stream failure is treated as definitely unsent", async () => {
++  const { getPromptFailureRecovery } = await loadSubject();
++  assert.deepEqual(getPromptFailureRecovery(true), {
++    definitelyNotSent: true,
++    notice: "连接中断，消息未发送；已恢复到输入框。",
++  });
++  assert.deepEqual(getPromptFailureRecovery(false), {
++    definitelyNotSent: false,
++    notice: "发送状态未确认。请刷新会话确认消息是否已送达后再重试。",
++  });
++});
+diff --git a/resources/pi-web/lib/prompt-failure.ts b/resources/pi-web/lib/prompt-failure.ts
+new file mode 100644
+index 0000000..204c106
+--- /dev/null
++++ b/resources/pi-web/lib/prompt-failure.ts
+@@ -0,0 +1,18 @@
++export interface PromptFailureRecovery {
++  /** The client knows this request never reached the agent. */
++  definitelyNotSent: boolean;
++  /** Safe text suitable for the UI; never include raw transport/config details. */
++  notice: string;
++}
++
++export function getPromptFailureRecovery(isEventStreamConnectionError: boolean): PromptFailureRecovery {
++  return isEventStreamConnectionError
++    ? {
++        definitelyNotSent: true,
++        notice: "连接中断，消息未发送；已恢复到输入框。",
++      }
++    : {
++        definitelyNotSent: false,
++        notice: "发送状态未确认。请刷新会话确认消息是否已送达后再重试。",
++      };
++}
+diff --git a/.tmp/pi-web-upstream/lib/rpc-manager.ts b/resources/pi-web/lib/rpc-manager.ts
+index 12c6a49..15070b5 100644
+--- a/.tmp/pi-web-upstream/lib/rpc-manager.ts
++++ b/resources/pi-web/lib/rpc-manager.ts
+@@ -14,6 +14,8 @@ import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
+ import type { AgentSessionLike, ExtensionUiContextLike, ToolInfo } from "./pi-types";
+ import type { ExtensionUiRequest, ExtensionUiResponse, ExtensionWidgetItem } from "./types";
+ import { createHeadlessCustomUiTui, DEFAULT_CUSTOM_UI_COLUMNS } from "./custom-ui-terminal";
++import { diagnosticError, diagnosticStack, instrumentProviderStream, recordSessionDiagnostic, summarizeAgentEvent, trackAbortSignal } from "./session-diagnostics";
++import { withEmptyAbortRetries, type EmptyAbortRetryStream } from "./empty-abort-retry";
+ 
+ // ============================================================================
+ // Types
+@@ -134,6 +136,15 @@ function withExtensionTools(session: AgentSessionLike, toolNames: string[]): str
+ // Wraps AgentSession with the same interface the rest of the app expects
+ // ============================================================================
+ 
++type CoreAgentDiagnosticsTarget = {
++  abort?: () => unknown;
++  runWithLifecycle?: (...args: unknown[]) => unknown;
++  streamFunction?: (...args: unknown[]) => unknown;
++  signal?: unknown;
++};
++
++const instrumentedCoreAgents = new WeakSet<object>();
++
+ export class AgentSessionWrapper {
+   private listeners: EventListener[] = [];
+   private pendingUiResponses = new Map<string, PendingUiResponse>();
+@@ -175,7 +186,15 @@ export class AgentSessionWrapper {
+   }
+ 
+   start(): void {
++    this.installCoreAgentDiagnostics();
++    recordSessionDiagnostic(this.inner.sessionId, "wrapper_start");
+     this.unsubscribe = this.inner.subscribe((event: AgentEvent) => {
++      // Metadata-only event timeline. It intentionally excludes content, args and errors.
++      // Per-token message_update events dominate long traces without adding abort causality;
++      // provider terminal instrumentation records the useful stream boundary instead.
++      if (event.type !== "message_update") {
++        recordSessionDiagnostic(this.inner.sessionId, "agent_event", summarizeAgentEvent(event));
++      }
+       if (event.type === "agent_end") {
+         invalidateSessionListCache();
+       }
+@@ -187,6 +206,101 @@ export class AgentSessionWrapper {
+     notifyRunningChange();
+   }
+ 
++  private installCoreAgentDiagnostics(): void {
++    const agent = this.inner.agent as unknown as CoreAgentDiagnosticsTarget;
++    if (!agent || typeof agent !== "object" || instrumentedCoreAgents.has(agent)) return;
++    instrumentedCoreAgents.add(agent);
++    const thisSessionId = this.inner.sessionId;
++
++    // runWithLifecycle creates the controller synchronously before its first
++    // await. Registering here covers an abort that happens before streamFunction.
++    if (typeof agent.runWithLifecycle === "function") {
++      const originalRunWithLifecycle = agent.runWithLifecycle;
++      agent.runWithLifecycle = function instrumentedRunWithLifecycle(this: CoreAgentDiagnosticsTarget, ...args: unknown[]): unknown {
++        const result = originalRunWithLifecycle.apply(this, args);
++        trackAbortSignal(thisSessionId, this.signal);
++        recordSessionDiagnostic(thisSessionId, "core_run_started", {
++          signalAborted: Boolean((this.signal as { aborted?: unknown } | undefined)?.aborted),
++        });
++        return result;
++      };
++    }
++
++    if (typeof agent.abort === "function") {
++      const originalAbort = agent.abort;
++      agent.abort = function instrumentedAbort(this: CoreAgentDiagnosticsTarget): unknown {
++        recordSessionDiagnostic(thisSessionId, "agent_abort_called", { stack: diagnosticStack() });
++        return originalAbort.call(this);
++      };
++    }
++
++    if (typeof agent.streamFunction === "function") {
++      const originalStreamFunction = agent.streamFunction;
++      agent.streamFunction = function instrumentedStreamFunction(this: CoreAgentDiagnosticsTarget, ...args: unknown[]): unknown {
++        const context = args[1] as { messages?: unknown; tools?: Array<{ name?: unknown }> } | undefined;
++        const options = args[2] as { signal?: unknown; transport?: unknown } | undefined;
++        const toolNames = Array.isArray(context?.tools)
++          ? context.tools.map((tool) => tool?.name).filter((name): name is string => typeof name === "string").sort()
++          : [];
++        trackAbortSignal(thisSessionId, options?.signal);
++        recordSessionDiagnostic(thisSessionId, "stream_function_called", {
++          provider: typeof (args[0] as { provider?: unknown } | undefined)?.provider === "string" ? (args[0] as { provider: string }).provider : "unknown",
++          modelId: typeof (args[0] as { id?: unknown } | undefined)?.id === "string" ? (args[0] as { id: string }).id : "unknown",
++          signalAborted: Boolean((options?.signal as { aborted?: unknown } | undefined)?.aborted),
++          messageCount: Array.isArray(context?.messages) ? context.messages.length : 0,
++          toolCount: toolNames.length,
++          toolNames,
++          ...(typeof options?.transport === "string" ? { transport: options.transport } : {}),
++        });
++        const abortSignal = options?.signal && typeof options.signal === "object" && "aborted" in options.signal
++          ? options.signal as AbortSignal
++          : undefined;
++        const provider = typeof (args[0] as { provider?: unknown } | undefined)?.provider === "string"
++          ? (args[0] as { provider: string }).provider
++          : "unknown";
++        const modelId = typeof (args[0] as { id?: unknown } | undefined)?.id === "string"
++          ? (args[0] as { id: string }).id
++          : "unknown";
++        const wrapStream = (stream: unknown): unknown => {
++          const retried = withEmptyAbortRetries(
++            stream as EmptyAbortRetryStream,
++            async () => await originalStreamFunction.apply(this, args) as EmptyAbortRetryStream,
++            abortSignal,
++            (event, details) => recordSessionDiagnostic(thisSessionId, `provider_empty_abort_retry_${event}`, {
++              provider,
++              modelId,
++              signalAborted: abortSignal?.aborted ?? false,
++              ...details,
++            }),
++          );
++          return instrumentProviderStream(thisSessionId, retried, abortSignal);
++        };
++        try {
++          const result = originalStreamFunction.apply(this, args);
++          if (result && typeof (result as Promise<unknown>).then === "function") {
++            return Promise.resolve(result).then(
++              wrapStream,
++              (error) => {
++                recordSessionDiagnostic(thisSessionId, "stream_function_rejected", {
++                  signalAborted: Boolean((options?.signal as { aborted?: unknown } | undefined)?.aborted),
++                  ...diagnosticError(error),
++                });
++                throw error;
++              },
++            );
++          }
++          return wrapStream(result);
++        } catch (error) {
++          recordSessionDiagnostic(thisSessionId, "stream_function_threw", {
++            signalAborted: Boolean((options?.signal as { aborted?: unknown } | undefined)?.aborted),
++            ...diagnosticError(error),
++          });
++          throw error;
++        }
++      };
++    }
++  }
++
+   setForceEmptySystemPrompt(force: boolean): void {
+     this.forceEmptySystemPrompt = force;
+     this.applyForcedEmptySystemPrompt();
+diff --git a/resources/pi-web/lib/session-copy.test.mjs b/resources/pi-web/lib/session-copy.test.mjs
+new file mode 100644
+index 0000000..d9e4535
+--- /dev/null
++++ b/resources/pi-web/lib/session-copy.test.mjs
+@@ -0,0 +1,17 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++
++async function loadSubject() {
++  return import("./session-copy.ts");
++}
++
++test("formats labelled session ID and JSONL path for clipboard", async () => {
++  const { formatSessionCopyDetails } = await loadSubject();
++  assert.equal(
++    formatSessionCopyDetails({
++      id: "019f9e47-edc9-7b90-b8be-1b0652d842d2",
++      path: "C:/Users/<USER>/.pi/agent/sessions/project/session.jsonl",
++    }),
++    "Session ID: 019f9e47-edc9-7b90-b8be-1b0652d842d2\nSession file: C:/Users/<USER>/.pi/agent/sessions/project/session.jsonl",
++  );
++});
+diff --git a/resources/pi-web/lib/session-copy.ts b/resources/pi-web/lib/session-copy.ts
+new file mode 100644
+index 0000000..ffbf9c3
+--- /dev/null
++++ b/resources/pi-web/lib/session-copy.ts
+@@ -0,0 +1,12 @@
++export interface CopyableSession {
++  id: string;
++  path: string;
++}
++
++/**
++ * Clipboard text for a session row. Keep this independent from the sidebar so
++ * upgrades can retain the user-facing format without copying UI internals.
++ */
++export function formatSessionCopyDetails(session: CopyableSession): string {
++  return `Session ID: ${session.id}\nSession file: ${session.path}`;
++}
+diff --git a/resources/pi-web/lib/session-diagnostics.ts b/resources/pi-web/lib/session-diagnostics.ts
+new file mode 100644
+index 0000000..e889c73
+--- /dev/null
++++ b/resources/pi-web/lib/session-diagnostics.ts
+@@ -0,0 +1,244 @@
++import { appendFile, mkdir } from "fs/promises";
++import { homedir } from "os";
++import { join } from "path";
++
++/**
++ * Best-effort, per-session diagnostics for intermittent agent termination.
++ * Records metadata only: no prompt text, response text, tool arguments, keys,
++ * or provider error messages are written to disk.
++ */
++const TRACE_DIRECTORY = join(homedir(), ".pi", "agent", "abort-traces");
++const MAX_PENDING_WRITES = 4_096;
++
++type WriterState = {
++  tail: Promise<void>;
++  pending: number;
++  initialized: boolean;
++  dropped: boolean;
++};
++
++const writers = new Map<string, WriterState>();
++const signalOwners = new WeakMap<AbortSignal, string>();
++const observedSignals = new WeakSet<AbortSignal>();
++const instrumentedProviderStreams = new WeakSet<object>();
++let abortPatchInstalled = false;
++
++function writerFor(sessionId: string): WriterState {
++  let state = writers.get(sessionId);
++  if (!state) {
++    state = { tail: Promise.resolve(), pending: 0, initialized: false, dropped: false };
++    writers.set(sessionId, state);
++  }
++  return state;
++}
++
++function stackFrames(skip = 2): string[] {
++  return (new Error().stack ?? "")
++    .split(/\r?\n/)
++    .slice(skip, skip + 12)
++    .map((line) => line.trim())
++    .filter((line) => line.startsWith("at "));
++}
++
++export function diagnosticError(error: unknown): Record<string, unknown> {
++  const value = error as { name?: unknown; code?: unknown; stack?: unknown } | null;
++  const stack = typeof value?.stack === "string"
++    ? value.stack.split(/\r?\n/).slice(1, 13).map((line) => line.trim()).filter((line) => line.startsWith("at "))
++    : [];
++  return {
++    errorType: typeof value?.name === "string" ? value.name : typeof error,
++    ...(typeof value?.code === "string" || typeof value?.code === "number" ? { errorCode: value.code } : {}),
++    ...(stack.length ? { stack } : {}),
++  };
++}
++
++/** Queue a JSONL record without ever blocking or failing an agent run. */
++export function recordSessionDiagnostic(sessionId: string, kind: string, details: Record<string, unknown> = {}): void {
++  const state = writerFor(sessionId);
++  if (state.pending >= MAX_PENDING_WRITES) {
++    if (!state.dropped) {
++      state.dropped = true;
++      console.warn(`[pi-web] diagnostic trace queue saturated for session ${sessionId}`);
++    }
++    return;
++  }
++
++  const line = `${JSON.stringify({ ts: new Date().toISOString(), sessionId, kind, ...details })}\n`;
++  state.pending += 1;
++  state.tail = state.tail
++    .then(async () => {
++      if (!state.initialized) {
++        await mkdir(TRACE_DIRECTORY, { recursive: true });
++        state.initialized = true;
++      }
++      await appendFile(join(TRACE_DIRECTORY, `${sessionId}.jsonl`), line, "utf8");
++    })
++    .catch(() => {
++      // Diagnostics must never affect a normal run. Errors are intentionally not re-logged.
++    })
++    .finally(() => { state.pending -= 1; });
++}
++
++export function getDiagnosticTracePath(sessionId: string): string {
++  return join(TRACE_DIRECTORY, `${sessionId}.jsonl`);
++}
++
++/** Associate the core run signal with a session before it reaches the provider. */
++export function trackAbortSignal(sessionId: string, signal: unknown): void {
++  if (!signal || typeof signal !== "object" || !("aborted" in signal)) return;
++  const abortSignal = signal as AbortSignal;
++  signalOwners.set(abortSignal, sessionId);
++  installAbortPatch();
++  if (!observedSignals.has(abortSignal)) {
++    observedSignals.add(abortSignal);
++    abortSignal.addEventListener("abort", () => {
++      recordSessionDiagnostic(sessionId, "stream_signal_abort_event", {
++        signalAborted: abortSignal.aborted,
++        reasonType: abortSignal.reason === null ? "null" : typeof abortSignal.reason,
++      });
++    }, { once: true });
++  }
++  recordSessionDiagnostic(sessionId, "stream_signal_observed", { signalAborted: abortSignal.aborted });
++}
++
++type ProviderStreamLike = {
++  push?: (event: unknown) => unknown;
++  end?: (result?: unknown) => unknown;
++  result?: () => Promise<unknown>;
++};
++
++function providerMessageSummary(value: unknown): Record<string, unknown> {
++  if (!value || typeof value !== "object") return {};
++  const message = value as Record<string, unknown>;
++  const usage = message.usage as Record<string, unknown> | undefined;
++  return {
++    ...(typeof message.stopReason === "string" ? { stopReason: message.stopReason } : {}),
++    ...(Array.isArray(message.content) ? {
++      contentPartCount: message.content.length,
++      contentTypes: message.content
++        .map((part) => part && typeof part === "object" ? (part as { type?: unknown }).type : undefined)
++        .filter((type): type is string => typeof type === "string"),
++    } : {}),
++    hasErrorMessage: typeof message.errorMessage === "string" && message.errorMessage.length > 0,
++    ...(usage && typeof usage.totalTokens === "number" ? { totalTokens: usage.totalTokens } : {}),
++  };
++}
++
++/** Trace the actual provider EventStream boundary without consuming or replacing it. */
++export function instrumentProviderStream(sessionId: string, stream: unknown, signal: unknown): unknown {
++  if (!stream || typeof stream !== "object" || instrumentedProviderStreams.has(stream)) return stream;
++  instrumentedProviderStreams.add(stream);
++  const target = stream as ProviderStreamLike;
++  const abortSignal = signal && typeof signal === "object" && "aborted" in signal ? signal as AbortSignal : undefined;
++  const signalState = () => ({ signalAborted: abortSignal?.aborted ?? false });
++
++  if (typeof target.push === "function") {
++    const originalPush = target.push;
++    target.push = function diagnosticPush(this: ProviderStreamLike, event: unknown): unknown {
++      const value = event && typeof event === "object" ? event as Record<string, unknown> : undefined;
++      const eventType = typeof value?.type === "string" ? value.type : "unknown";
++      if (eventType === "start") {
++        recordSessionDiagnostic(sessionId, "provider_stream_start", signalState());
++      } else if (eventType === "done" || eventType === "error") {
++        const message = eventType === "error" ? value?.error : value?.message;
++        recordSessionDiagnostic(sessionId, "provider_stream_terminal_event", {
++          streamEventType: eventType,
++          ...(typeof value?.reason === "string" ? { reason: value.reason } : {}),
++          ...signalState(),
++          ...providerMessageSummary(message),
++        });
++      }
++      return originalPush.call(this, event);
++    };
++  }
++
++  if (typeof target.end === "function") {
++    const originalEnd = target.end;
++    target.end = function diagnosticEnd(this: ProviderStreamLike, result?: unknown): unknown {
++      recordSessionDiagnostic(sessionId, "provider_stream_end", {
++        ...signalState(),
++        hasExplicitResult: arguments.length > 0,
++        ...providerMessageSummary(result),
++      });
++      return originalEnd.call(this, result);
++    };
++  }
++
++  if (typeof target.result === "function") {
++    const originalResult = target.result;
++    target.result = function diagnosticResult(this: ProviderStreamLike): Promise<unknown> {
++      try {
++        return Promise.resolve(originalResult.call(this)).then(
++          (result) => {
++            recordSessionDiagnostic(sessionId, "provider_stream_result", {
++              ...signalState(),
++              ...providerMessageSummary(result),
++            });
++            return result;
++          },
++          (error) => {
++            recordSessionDiagnostic(sessionId, "provider_stream_result_rejected", {
++              ...signalState(),
++              ...diagnosticError(error),
++            });
++            throw error;
++          },
++        );
++      } catch (error) {
++        recordSessionDiagnostic(sessionId, "provider_stream_result_threw", {
++          ...signalState(),
++          ...diagnosticError(error),
++        });
++        throw error;
++      }
++    };
++  }
++
++  return stream;
++}
++
++/**
++ * The core API exposes an AbortSignal but not its controller. Patching the
++ * standard controller only emits a stack for signals explicitly associated
++ * above, so unrelated server operations have no trace impact.
++ */
++function installAbortPatch(): void {
++  if (abortPatchInstalled) return;
++  abortPatchInstalled = true;
++  const originalAbort = AbortController.prototype.abort;
++  AbortController.prototype.abort = function patchedAbort(this: AbortController, reason?: unknown): void {
++    const sessionId = signalOwners.get(this.signal);
++    if (sessionId) {
++      recordSessionDiagnostic(sessionId, "abort_controller_abort", {
++        signalWasAborted: this.signal.aborted,
++        reasonType: reason === null ? "null" : typeof reason,
++        stack: stackFrames(2),
++      });
++    }
++    originalAbort.call(this, reason);
++  };
++}
++
++export function diagnosticStack(): string[] {
++  return stackFrames(2);
++}
++
++export function summarizeAgentEvent(event: Record<string, unknown>): Record<string, unknown> {
++  const summary: Record<string, unknown> = { eventType: String(event.type ?? "unknown") };
++  const message = event.message as Record<string, unknown> | undefined;
++  if (message && typeof message === "object") {
++    summary.role = typeof message.role === "string" ? message.role : "unknown";
++    if (typeof message.stopReason === "string") summary.stopReason = message.stopReason;
++    summary.hasErrorMessage = typeof message.errorMessage === "string" && message.errorMessage.length > 0;
++    if (Array.isArray(message.content)) {
++      summary.contentTypes = message.content
++        .map((part) => typeof part === "object" && part !== null ? (part as { type?: unknown }).type : undefined)
++        .filter((type): type is string => typeof type === "string");
++      summary.contentPartCount = message.content.length;
++    }
++  }
++  const streamEvent = event.assistantMessageEvent as Record<string, unknown> | undefined;
++  if (streamEvent && typeof streamEvent.type === "string") summary.streamEventType = streamEvent.type;
++  if (typeof event.toolName === "string") summary.toolName = event.toolName;
++  return summary;
++}
+diff --git a/.tmp/pi-web-upstream/lib/session-reader.ts b/resources/pi-web/lib/session-reader.ts
+index 6c0da25..51651e6 100644
+--- a/.tmp/pi-web-upstream/lib/session-reader.ts
++++ b/resources/pi-web/lib/session-reader.ts
+@@ -231,11 +231,27 @@ export function buildSessionContext(
+     }
+   }
+ 
++  // Derive the picker model from the user's last explicit `model_change` on
++  // the active path (e.g. pi-router/auto). The SDK's piCtx.model is derived
++  // from the last assistant message, which records the *resolved* backend
++  // model the router actually used (e.g. aliyun-token-plan/qwen3.7-plus), so it
++  // flips the picker away from pi-router/auto after every turn. The user's
++  // selection lives only in model_change entries; fall back to piCtx.model only
++  // when the path has no model_change (e.g. a fresh session before any switch).
++  let pickerModel = piCtx.model;
++  for (let i = contextEntries.length - 1; i >= 0; i--) {
++    const e = contextEntries[i] as unknown as SessionEntry;
++    if (e?.type === "model_change") {
++      pickerModel = { provider: e.provider, modelId: e.modelId };
++      break;
++    }
++  }
++
+   return {
+     messages,
+     entryIds,
+     thinkingLevel: piCtx.thinkingLevel,
+-    model: piCtx.model,
++    model: pickerModel,
+   };
+ }
+ 

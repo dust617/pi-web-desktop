@@ -1,0 +1,28 @@
+{
+  "version": "0.8.7",
+  "gitTag": "v0.8.7",
+  "gitTagPeeledCommit": "07f873ca12ea30b1714304270dd38117e216cafb",
+  "npmGitHead": "4e50c172327fc7e23cb2e4002dc3a4ab8e50f00f",
+  "shasum": "a9a78162c661f7e6761bcb10e8bed6ac7fbbe033",
+  "integrity": "sha512-SfcwfSTLm6anN2l0xK/kSntwgs5r7h6VDLGmNk7PVUYIEkeHeONuEf7bE7yUjpRgTQ46n73WspOzExmQ3Uv6TQ==",
+  "buildId": "2Tg7bidg2EQEkEhBv138z",
+  "buildFromSource": true,
+  "requiredCompiledRoutes": [
+    "/api/archived-sessions"
+  ],
+  "stagedAt": "2026-08-06T18:44:22.025Z",
+  "nodeVersion": "v24.15.0",
+  "patches": [
+    "outputFileTracingRoot",
+    "archived-sessions-route",
+    "directory-browser-windows-paths",
+    "isolated-build-home",
+    "test-script",
+    "session-ui-adapters"
+  ],
+  "piCodingAgentVersion": "0.84.0",
+  "tests": {
+    "command": "npm test",
+    "passed": true
+  }
+}

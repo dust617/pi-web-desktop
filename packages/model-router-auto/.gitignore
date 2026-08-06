@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.pi/orchestrator.json
+.pi/settings.json
+.pi/orchestrator-state.json
+.pi/orchestrator-state/
+.pi/orchestrator-telemetry.v2.jsonl*
+.pi/router-supervisor-hint.json
+.pi/orchestrator-route.log
+.pi-subagents/
+*.log
+.DS_Store
